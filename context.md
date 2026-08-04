@@ -5645,3 +5645,19 @@ and the throwaway verification script completely before finishing — clean
   `work_locations` upsert), so there's no new reason to expect it not to
   work — but confirming it actually lands in the live table needs a real
   signed-in session, which this environment doesn't have.
+
+### Handoff, said directly rather than left implicit
+User asked point-blank whether this is confirmed stored in the real
+database before stepping away. Answered honestly rather than imply more
+confidence than the evidence supports: the logic/UI is genuinely verified
+(real browser, real reproduction of the exact save-timing bug being
+fixed), the actual live write is not, for the reason above — no real
+login available in this environment, not a flaw found in the code. Gave
+the user the fast close-the-loop check to run themselves before leaving:
+sign in for real, go to Location, pick a day or two, click Update, refresh
+(or check from another device/account) — if it's still there after
+reload, it's genuinely in `work_locations`, not just local state. If it
+turns out *not* to persist, the first thing to check is
+`realAuthContext` actually being set at that point in the real session
+(see `setRealAuthContext` in `App.jsx`/`data.js`), not this section's
+logic, which is what was actually exercised and confirmed correct here.
