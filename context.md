@@ -5585,3 +5585,63 @@ Clean `vite build`. Not verified live (no signed-in session available this
 session) — the real test is whether a vertical that itself has zero
 projects yet now still correctly shows *other* verticals' projects as
 tie-to options.
+
+## 78. Work Location's "Your week" rebuilt from save-on-every-click to
+draft-then-Update (2026-08-04, same day, immediate follow-up)
+
+First asked for a bulk "set the whole week to one location" button —
+built it (a `<select>` + "Update week"), but the user's own real usage
+immediately showed the actual problem: a real week is rarely one location
+every day, it's a genuine mix ("custom options chosen"), and what was
+actually wanted was for picking different locations on different days to
+stay **unsaved** until one explicit "Update" click, not each day writing
+to the database the instant its button is clicked (the original section-74
+behavior). Direct quote: "custom options chosen and it should show update
+then only db can be recorded... this wont help in the greater extent" —
+correctly calling out that the whole-week-one-location button didn't
+address the actual use case at all.
+
+Replaced both the old immediate-save `pick()` and the short-lived bulk
+button with one model: clicking a day's location button now only edits
+local `draft` state (`{ [dateIso]: locationKey }`) — nothing reaches
+`setWorkLocation` yet. A single "Update" button at the bottom of the card
+writes every *changed* day in one pass (skips days whose draft matches
+what's already saved, so a no-op click does zero real writes) and is
+disabled with "Nothing to save" text when the draft matches the saved
+state exactly. `draft` re-seeds from the real saved values (`locationOn`)
+whenever the visible week changes via Prev/Next — a draft is a scratchpad
+for the week on screen, not something carried across navigating away from
+it.
+
+### Actually verified live this time, not just code-reviewed
+No real login was available this session (same recurring gap), so
+verified the logic end-to-end a different way: added the same kind of
+temporary unauthenticated preview route this project used in section 73
+(`/__preview_location` in `App.jsx`, rendering `<WorkLocation
+me={users[0]} />`), and since neither `chromium-cli` nor Playwright were
+already available in this environment, installed Playwright fresh
+(`npm install --no-save playwright` + `npx playwright install chromium` —
+`--no-save` kept `package.json`/`package-lock.json` untouched, confirmed
+after via `git status`) and drove it with a real headless-Chromium script.
+Confirmed: (1) picking Mon → WFH and Tue → Okhla Office left the
+"Everyone this week" table showing this same mock user's row as all
+dashes — proving nothing saved on click; (2) clicking Update changed
+exactly those two cells to the right badges, left Wed-Fri untouched; (3)
+zero console errors. Screenshots confirm the same. Removed the temp route,
+its now-unused `WorkLocation`/`users` imports in `App.jsx`, the dev server,
+and the throwaway verification script completely before finishing — clean
+`vite build` after.
+
+### Where things stand, honestly
+- Built and **verified against the real client-side logic and UI**, via a
+  from-scratch Playwright session against a temporary preview route — not
+  a guess, an actual reproduction of the exact bug being fixed (save-on-
+  every-click vs. draft-then-commit).
+- **Not verified against the real Supabase database** — the preview route
+  used a mock, unauthenticated `me`, so `setWorkLocation`'s real-write
+  branch (gated on `realAuthContext`) never actually fired; only the local
+  mock-array behavior was exercised. The write path itself is unchanged
+  from section 74's already-real `setWorkLocation` (same function, same
+  `work_locations` upsert), so there's no new reason to expect it not to
+  work — but confirming it actually lands in the live table needs a real
+  signed-in session, which this environment doesn't have.
