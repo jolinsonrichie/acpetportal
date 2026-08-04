@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Avatar, Empty } from '../components/ui.jsx';
 import { VerticalGroup, VERTICAL_ACCENTS, NotifyForm } from '../components/Team.jsx';
 import Notifications from '../components/Notifications.jsx';
+import WorkLocation from '../components/WorkLocation.jsx';
 import WorkWorkspace from './WorkWorkspace.jsx';
 import {
   verticalsLedBy,
@@ -67,12 +68,14 @@ function VerticalMembers({ me, ledVerticals, onChanged }) {
 const NAV = [
   { id: 'work', label: 'Work' },
   { id: 'members', label: 'Vertical members' },
+  { id: 'location', label: 'Location' },
   { id: 'notifications', label: 'Notifications' },
 ];
 
 const TAB_TITLE = {
   work: 'Work',
   members: 'Vertical members',
+  location: 'Location',
   notifications: 'Notifications',
 };
 
@@ -221,6 +224,7 @@ export default function VerticalLeadHome({ me, onSignOut, onOrgChart }) {
         {tab === 'members' && (
           <VerticalMembers me={me} ledVerticals={ledVerticals} onChanged={() => bumpItems((n) => n + 1)} />
         )}
+        {tab === 'location' && <WorkLocation me={me} />}
         {tab === 'notifications' && (
           <Notifications
             me={me}

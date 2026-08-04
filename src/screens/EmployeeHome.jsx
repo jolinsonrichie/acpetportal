@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Avatar, Empty } from '../components/ui.jsx';
 import Notifications from '../components/Notifications.jsx';
+import WorkLocation from '../components/WorkLocation.jsx';
 import Overview from './Overview.jsx';
 import WorkWorkspace from './WorkWorkspace.jsx';
 import {
@@ -117,6 +118,7 @@ const APP_LABEL = {
   overview: 'Overview',
   work: 'Work',
   vertical: 'My vertical',
+  location: 'Location',
   notifications: 'Notifications',
 };
 
@@ -251,6 +253,7 @@ export default function EmployeeHome({ me, onSignOut, onOrgChart }) {
     { id: 'overview', label: APP_LABEL.overview },
     { id: 'work', label: APP_LABEL.work },
     { id: 'vertical', label: APP_LABEL.vertical },
+    { id: 'location', label: APP_LABEL.location },
     {
       id: 'notifications',
       label: APP_LABEL.notifications,
@@ -385,6 +388,7 @@ export default function EmployeeHome({ me, onSignOut, onOrgChart }) {
           />
         )}
         {tab === 'vertical' && <MyVertical me={me} />}
+        {tab === 'location' && <WorkLocation me={me} />}
         {tab === 'notifications' && (
           <Notifications
             me={me}

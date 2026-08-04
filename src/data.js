@@ -208,6 +208,29 @@ export const users = [
     vertical_id: 'v7',
     reports_to: 'u1',
   },
+  {
+    // Added 2026-07-31, explicitly project-basis per the user: no home
+    // vertical at all, on purpose — they work across whichever projects
+    // they're assigned to rather than belonging to one team. reports_to
+    // left null since it wasn't stated (not guessed), same convention as
+    // u12 above.
+    id: 'u16',
+    email: 'katelyn.patta@ashoka.edu.in',
+    full_name: 'Ms. Katelyn Patta',
+    job_title: 'Junior Research Associate',
+    role: 'employee',
+    vertical_id: null,
+    reports_to: null,
+  },
+  {
+    id: 'u17',
+    email: 'varusha.khare@ashoka.edu.in',
+    full_name: 'Ms. Varusha Khare',
+    job_title: 'Junior Research Associate',
+    role: 'employee',
+    vertical_id: null,
+    reports_to: null,
+  },
 ];
 
 // Extra (non-primary) team memberships — a person's *primary* team is still
@@ -246,6 +269,103 @@ export const notifications = [];
 
 // current week, hardcoded for the mock
 export const CURRENT_WEEK = '2026-07-27';
+
+// Work location tracker (2026-07-31) — built UI-first against this array
+// mock-only, confirmed working, then wired to a real table (migration
+// 0014) the same session. Real rows merge into this array exactly like
+// every other feature here (_real-tagged, syncWorkLocations below), so
+// every existing consumer (locationOn, the WorkLocation component) keeps
+// working unchanged.
+export const WORK_LOCATIONS = {
+  office_1: { label: 'Tata Smart Grid Lab', tone: 'blue' },
+  office_2: { label: 'Okhla Office', tone: 'amber' },
+  wfh: { label: 'WFH', tone: 'green' },
+};
+
+// { id, user_id, date ('YYYY-MM-DD'), location (a WORK_LOCATIONS key) } — one
+// row per person per day, upserted by setWorkLocation below.
+export const workLocations = [];
+let nextWorkLocationSeq = 1;
+
+// Local calendar date as 'YYYY-MM-DD' — not `toISOString().slice(0, 10)`,
+// which converts to UTC first and can silently shift the date by a day
+// depending on the browser's timezone. Everything here works in the
+// viewer's own local calendar day, not UTC.
+function isoDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// Monday of the week containing `d` — takes a Date in, rather than reaching
+// for `new Date()` itself, same "never a live clock inside data.js, the
+// caller computes `now` once" rule formatRelativeTime/isFridayReminderWindow
+// already established; the component computes today's real date once and
+// passes it in.
+export function mondayOf(d) {
+  const x = new Date(d);
+  const day = x.getDay(); // 0 = Sunday .. 6 = Saturday
+  const diff = day === 0 ? -6 : 1 - day;
+  x.setDate(x.getDate() + diff);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+// The 5 weekday dates (Mon-Fri), as 'YYYY-MM-DD', for the week starting at
+// `monday` (pass mondayOf's own output straight in).
+export function weekdayDates(monday) {
+  return Array.from({ length: 5 }, (_, i) => {
+    const d = new Date(monday);
+    d.setDate(d.getDate() + i);
+    return isoDate(d);
+  });
+}
+
+export function locationOn(userId, dateIso) {
+  return workLocations.find((w) => w.user_id === userId && w.date === dateIso)?.location ?? null;
+}
+
+// Sets, changes, or (passing null) clears the given person's location for
+// one day. Self-only by construction — the UI only ever calls this for the
+// signed-in viewer's own id, and work_locations_update_own/insert_own/
+// delete_own (migration 0014) enforce the same thing server-side.
+export async function setWorkLocation(userId, dateIso, location) {
+  const idx = workLocations.findIndex((w) => w.user_id === userId && w.date === dateIso);
+  const isRealSelf = realAuthContext && userId === realAuthContext.mockUserId;
+
+  if (isRealSelf) {
+    if (!location) {
+      const { error } = await supabase
+        .from('work_locations')
+        .delete()
+        .eq('user_id', realAuthContext.authId)
+        .eq('date', dateIso);
+      if (error) throw error;
+    } else {
+      const { error } = await supabase
+        .from('work_locations')
+        .upsert({ user_id: realAuthContext.authId, date: dateIso, location }, { onConflict: 'user_id,date' });
+      if (error) throw error;
+    }
+  }
+
+  if (!location) {
+    if (idx >= 0) workLocations.splice(idx, 1);
+    return;
+  }
+  if (idx >= 0) {
+    workLocations[idx] = { ...workLocations[idx], location, _real: !!isRealSelf };
+  } else {
+    workLocations.push({
+      id: `wl-local-${nextWorkLocationSeq++}`,
+      user_id: userId,
+      date: dateIso,
+      location,
+      _real: !!isRealSelf,
+    });
+  }
+}
 
 // helpers -------------------------------------------------------------
 
@@ -482,7 +602,7 @@ export async function syncRealWorkItems() {
     supabase
       .from('work_items')
       .select(
-        '*, members(user_id, role_on_item, responsibility, assigned_at, assigned_by, profiles!members_user_id_fkey(email)), work_item_verticals(vertical_id, verticals(name))'
+        '*, members(user_id, role_on_item, responsibility, target_date, assigned_at, assigned_by, profiles!members_user_id_fkey(email)), work_item_verticals(vertical_id, verticals(name))'
       )
       .order('created_at', { ascending: false }),
     supabase.from('verticals').select('id, name'),
@@ -534,6 +654,7 @@ export async function syncRealWorkItems() {
         user_id: mockPerson.id,
         role_on_item: m.role_on_item,
         responsibility: m.responsibility,
+        target_date: m.target_date,
         assigned_at: m.assigned_at,
         assigned_by: m.assigned_by,
         _real: true,
@@ -636,7 +757,43 @@ export async function syncRealNotifications() {
 // is wired to live Realtime subscriptions yet, so a second real account's
 // changes otherwise only show up on this session's next sign-in or reload.
 export async function syncRealData() {
-  await Promise.all([syncRealWorkItems(), syncRealComments(), syncRealContributions(), syncRealNotifications()]);
+  await Promise.all([
+    syncRealWorkItems(),
+    syncRealComments(),
+    syncRealContributions(),
+    syncRealNotifications(),
+    syncWorkLocations(),
+  ]);
+}
+
+// Pulls every real work_locations row (RLS lets everyone read all of
+// them — see migration 0014's work_locations_select) and merges it into
+// the mock array, same _real-tagged merge/skip-unmapped-author pattern
+// syncRealWorkItems/syncRealComments/syncRealContributions already use.
+export async function syncWorkLocations() {
+  if (!realAuthContext) return;
+  const { data: rows, error } = await supabase
+    .from('work_locations')
+    .select('date, location, profiles!work_locations_user_id_fkey(email)');
+  if (error) {
+    console.error('syncWorkLocations failed:', error.message);
+    return;
+  }
+
+  for (let i = workLocations.length - 1; i >= 0; i--) {
+    if (workLocations[i]._real) workLocations.splice(i, 1);
+  }
+  for (const row of rows ?? []) {
+    const mockUser = row.profiles?.email ? getUserByEmail(row.profiles.email) : null;
+    if (!mockUser) continue;
+    workLocations.push({
+      id: `wl-real-${mockUser.id}-${row.date}`,
+      user_id: mockUser.id,
+      date: row.date,
+      location: row.location,
+      _real: true,
+    });
+  }
 }
 
 async function addRealWorkItem({ type, title, description, target_date, status, progress_note, plan_note, owning_verticals, role_on_item, responsibility }) {
@@ -766,9 +923,9 @@ export async function addWorkItem(
     }
   }
 
-  // Cross-vertical members picked at creation time (see creatableVerticalsFor/
-  // assignableUsersFor) — reuses assignWorkItem so real-vs-mock dispatch and
-  // the "added you" notification stay in one place regardless of item type.
+  // Cross-vertical members picked at creation time (see assignableUsersFor)
+  // — reuses assignWorkItem so real-vs-mock dispatch and the "added you"
+  // notification stay in one place regardless of item type.
   for (const m of initial_member_ids) {
     if (m.user_id === authorUserId) continue;
     await assignWorkItem(
@@ -907,11 +1064,15 @@ export async function addGrowthNote({ body, work_item_id }, authorUserId) {
   return note;
 }
 
-// Deletes a growth note/comment — real (Supabase, RLS-checked, see migration
+// Deletes a comment — a growth note (work_item_id null) or a per-item
+// comment, same table either way. Real (Supabase, RLS-checked, see migration
 // 0010's comments_delete: the author or a director) if it was synced/created
 // for real, mock-only splice otherwise. Mirrors deleteWorkItem's own
-// real-vs-mock shape exactly.
-export async function deleteGrowthNote(commentId) {
+// real-vs-mock shape exactly. Named generically (not deleteGrowthNote) since
+// CommentThread's per-item comments use this too now (2026-07-31) — it was
+// never actually growth-note-specific, comments_delete has no work_item_id
+// restriction.
+export async function deleteComment(commentId) {
   const idx = comments.findIndex((c) => c.id === commentId);
   if (idx >= 0 && comments[idx]._real) {
     // See deleteWorkItem's comment: an exact count catches an RLS-blocked
@@ -926,6 +1087,20 @@ export async function deleteGrowthNote(commentId) {
     if (!count) throw new Error("Delete didn't go through — you may not have permission to remove this.");
   }
   if (idx >= 0) comments.splice(idx, 1);
+}
+
+// Edits a comment/growth note's own text in place — author only (real:
+// comments_update_own, migration 0012; comments_update_for_cascade's
+// creator-of-the-item rule is a different, unrelated policy for the
+// work_item_id-nulling cascade, not user-facing editing).
+export async function updateComment(commentId, body) {
+  const c = comments.find((c) => c.id === commentId);
+  if (!c) return;
+  if (c._real) {
+    const { error } = await supabase.from('comments').update({ body }).eq('id', commentId);
+    if (error) throw error;
+  }
+  c.body = body;
 }
 
 let nextNotificationSeq = 1;
@@ -1014,6 +1189,27 @@ export async function assignWorkItem({ work_item_id, user_id, role_on_item = 'co
     created_at: CURRENT_WEEK,
   });
   return row;
+}
+
+// A person setting the deadline for their own piece of a project — distinct
+// from the item's own single target_date (the overall project deadline,
+// set once at creation): "if I'm added for web-portal development, that
+// deadline should be set by me," not dictated by whoever created the
+// project. Self-only by design (members_update_own, migration 0013) — no
+// director override, unlike delete elsewhere in this schema; a deadline for
+// your own task isn't something to moderate the way removing content is.
+export async function updateMemberDeadline(workItemId, userId, targetDate) {
+  const row = members.find((m) => m.work_item_id === workItemId && m.user_id === userId);
+  if (!row) return;
+  if (row._real && realAuthContext && userId === realAuthContext.mockUserId) {
+    const { error } = await supabase
+      .from('members')
+      .update({ target_date: targetDate || null })
+      .eq('work_item_id', workItemId)
+      .eq('user_id', realAuthContext.authId);
+    if (error) throw error;
+  }
+  row.target_date = targetDate || null;
 }
 
 // Post a comment on a work item AND notify everyone else already on that
@@ -1143,6 +1339,38 @@ export async function addContribution({ work_item_id, body }, authorUserId) {
     });
   }
   return note;
+}
+
+// Edits a contribution's own text in place — author only (real:
+// contributions_update_own, migration 0012). Distinct from just posting a
+// fresh one via addContribution (that's a new dated log entry, the natural
+// "this week's update" flow); this corrects a mistake in an existing entry
+// without adding another row or changing whose "latest" it counts as.
+export async function updateContribution(contributionId, body) {
+  const c = contributions.find((c) => c.id === contributionId);
+  if (!c) return;
+  if (c._real) {
+    const { error } = await supabase.from('contributions').update({ body }).eq('id', contributionId);
+    if (error) throw error;
+  }
+  c.body = body;
+}
+
+// Deletes a contribution — real (Supabase, RLS-checked, see migration
+// 0012's contributions_delete_own: the author or a director) if it was
+// synced/created for real, mock-only splice otherwise. Same real-vs-mock
+// shape as deleteComment/deleteWorkItem.
+export async function deleteContribution(contributionId) {
+  const idx = contributions.findIndex((c) => c.id === contributionId);
+  if (idx >= 0 && contributions[idx]._real) {
+    const { error, count } = await supabase
+      .from('contributions')
+      .delete({ count: 'exact' })
+      .eq('id', contributionId);
+    if (error) throw error;
+    if (!count) throw new Error("Delete didn't go through — you may not have permission to remove this.");
+  }
+  if (idx >= 0) contributions.splice(idx, 1);
 }
 
 // A vertical lead/co-lead broadcasting a note to one or more of their own
@@ -1365,17 +1593,16 @@ export function verticalsLedBy(viewer) {
   return verticals.filter((v) => ids.has(v.id));
 }
 
-// Which vertical(s) a viewer may tag a NEW work item to at creation.
-// director: every vertical, same unrestricted authority they have
-// everywhere else. Everyone else gets exactly leadershipVerticalIds — for
-// Anandajit that's precisely the 2 teams he leads (Energy Futures Lab +
-// Coal Transition), not all of them like a director; for a plain
-// vertical_lead it's their own 1 team; for an employee it's whatever
-// team(s) they belong to.
-export function creatableVerticalsFor(viewer) {
-  if (viewer.role === 'director') return verticals;
-  const scope = leadershipVerticalIds(viewer);
-  return verticals.filter((v) => scope.has(v.id));
+// Which vertical(s) a NEW work item can be explicitly tagged to, in the New
+// Work wizard's own Basics step (2026-07-31: brought back as an explicit
+// field there per direct correction — deriving it purely from whoever gets
+// assigned, tried earlier the same day, wasn't what was actually wanted).
+// Every viewer, any role, sees every vertical — the real server-side check
+// (wiv_insert in 0002_rls_policies.sql) only ever verifies the work item's
+// creator, never which vertical(s) it's tagged to, so restricting this
+// client-side would just be a UI limit the backend never enforced.
+export function creatableVerticalsFor() {
+  return verticals;
 }
 
 // Who a viewer can send a broadcast "notify" note to (see notifyMembers).
@@ -1417,53 +1644,29 @@ export function canActOnItem(viewer, item) {
   return true;
 }
 
-// Who a viewer can assign onto a specific work item. Plain visibleUsers is
-// too narrow here: a jointly-owned item (see workItemVerticals) may include
-// people from a linked vertical the assigner doesn't personally lead, so
-// lead-tier viewers also get anyone whose vertical is one of the item's
-// owning verticals. Employees can never assign (visibleUsers returns []
-// for them, which this inherits). senior_research_lead gets its own branch
-// (rather than collapsing into ORG_WIDE_ROLES's "everyone") so their
-// assignable pool matches canActOnItem's scoping — they can't assign onto a
-// team they don't lead/belong to.
-// `itemOrVerticalIds` is either an existing work item (post-creation Assign
-// picker — scoped by verticalsOf(item.id)) or a plain array of vertical ids
-// (the creation-time picker, before the item exists to look up).
-export function assignableUsersFor(viewer, itemOrVerticalIds) {
-  const itemVerticalIds = new Set(
-    Array.isArray(itemOrVerticalIds)
-      ? itemOrVerticalIds
-      : verticalsOf(itemOrVerticalIds.id).map((v) => v.id)
-  );
-
-  if (viewer.role === 'director') return users.filter((u) => u.id !== viewer.id);
-
-  // Bug fixed 2026-07-30: this used to fall back to `visibleUsers(viewer)`
-  // as a base pool, but visibleUsers already returns literally everyone
-  // org-wide for this role (that's the whole point of its org-wide *read*
-  // access) — folding that into an OR here silently defeated the entire
-  // vertical scoping below, so a senior_research_lead's assignable pool was
-  // actually "everyone at ACPET" regardless of scope/itemVerticalIds.
-  // Correct scope is exactly leadershipVerticalIds (his own led teams) union
-  // whichever vertical(s) this item/draft is explicitly tagged to — not
-  // his org-wide read access.
-  if (viewer.role === 'senior_research_lead') {
-    const scope = leadershipVerticalIds(viewer);
-    return users.filter(
-      (u) => u.id !== viewer.id && (scope.has(u.vertical_id) || itemVerticalIds.has(u.vertical_id))
-    );
-  }
-
-  const base = visibleUsers(viewer);
-  if (!VERTICAL_LEAD_ROLES.includes(viewer.role)) return base;
-
-  const extra = users.filter(
-    (u) =>
-      u.id !== viewer.id &&
-      itemVerticalIds.has(u.vertical_id) &&
-      !base.some((b) => b.id === u.id)
-  );
-  return [...base, ...extra];
+// Who a viewer can assign onto a work item. Broadened 2026-07-31, per
+// explicit direction that this org runs project-first, not vertical-first:
+// "the entire team works on the basis of project... people from any
+// vertical" need to be pickable, not just people already tied to the
+// item's own vertical(s) or the assigner's own team. The real authority
+// check was never here anyway — canActOnItem (which items a lead-tier
+// viewer may act on at all) and assign_work_item()'s RPC (which re-checks
+// that same authority server-side) never restricted the *target* user's
+// vertical, only whether the assigner has standing on the item itself. So
+// widening this to the whole org doesn't loosen any actual write
+// permission — it only removes a client-side candidate-list filter that
+// was stricter than what the backend ever enforced. Employees still get
+// nothing (canAssign gates the whole feature before this is ever called).
+// Bug fixed 2026-07-31 (same session): this still gated on role — only
+// lead-tier/director got any candidates at all, everyone else got an empty
+// list. That's still correct for the *post-creation* Assign button
+// (Team.jsx's WorkItemCard gates that separately via canAssign, unaffected
+// by this function), but wrong for the New Work wizard's own "add people to
+// the project I'm creating myself" step — any employee self-logging their
+// own work should be able to pull in collaborators on it, org-wide, same as
+// everyone else now can. No role check left here at all.
+export function assignableUsersFor(viewer) {
+  return users.filter((u) => u.id !== viewer.id);
 }
 
 export function visibleItems(viewer) {

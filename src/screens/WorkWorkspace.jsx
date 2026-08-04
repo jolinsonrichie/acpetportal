@@ -12,7 +12,8 @@ import {
   allTeamsOf,
   itemsForUser,
   addContribution,
-  deleteGrowthNote,
+  deleteComment,
+  updateComment,
   isArchived,
   isOrgWideRole,
   TYPE_LABELS,
@@ -32,16 +33,35 @@ const TABS = [
 
 function GrowthNoteRow({ note, me, onChanged }) {
   const author = getUser(note.author_id);
+  const canEdit = me && note.author_id === me.id;
   const canDelete = me && (note.author_id === me.id || me.role === 'director');
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(note.body);
   const [confirming, setConfirming] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState('');
+
+  async function handleSave() {
+    if (!draft.trim()) return;
+    setSaving(true);
+    setError('');
+    try {
+      await updateComment(note.id, draft.trim());
+      setEditing(false);
+      onChanged?.();
+    } catch (err) {
+      setError(err.message || 'Could not save — try again.');
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function handleDelete() {
     setDeleting(true);
     setError('');
     try {
-      await deleteGrowthNote(note.id);
+      await deleteComment(note.id);
       onChanged?.();
     } catch (err) {
       setError(err.message || 'Could not delete — try again.');
@@ -58,10 +78,40 @@ function GrowthNoteRow({ note, me, onChanged }) {
           {author ? <Avatar user={author} size={28} /> : null}
           <div className="grow">
             <p className="small" style={{ fontWeight: 600 }}>{author?.full_name ?? 'Unknown'}</p>
-            <p className="small muted" style={{ marginTop: 2 }}>{note.body}</p>
+            {editing ? (
+              <div className="stack" style={{ gap: 6, marginTop: 4 }}>
+                <textarea value={draft} disabled={saving} onChange={(e) => setDraft(e.target.value)} />
+                <div className="row" style={{ gap: 8 }}>
+                  <button
+                    type="button"
+                    className="primary"
+                    style={{ fontSize: 13 }}
+                    disabled={saving || !draft.trim()}
+                    onClick={handleSave}
+                  >
+                    {saving ? 'Saving…' : 'Save'}
+                  </button>
+                  <button
+                    type="button"
+                    className="quiet"
+                    style={{ fontSize: 13 }}
+                    disabled={saving}
+                    onClick={() => {
+                      setEditing(false);
+                      setDraft(note.body);
+                      setError('');
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="small muted" style={{ marginTop: 2 }}>{note.body}</p>
+            )}
           </div>
         </div>
-        {canDelete ? (
+        {!editing && (canEdit || canDelete) ? (
           confirming ? (
             <span className="row" style={{ gap: 6 }}>
               <button
@@ -77,9 +127,18 @@ function GrowthNoteRow({ note, me, onChanged }) {
               </button>
             </span>
           ) : (
-            <button className="quiet" style={{ fontSize: 13 }} onClick={() => setConfirming(true)}>
-              Delete
-            </button>
+            <span className="row" style={{ gap: 6 }}>
+              {canEdit ? (
+                <button className="quiet" style={{ fontSize: 13 }} onClick={() => setEditing(true)}>
+                  Edit
+                </button>
+              ) : null}
+              {canDelete ? (
+                <button className="quiet" style={{ fontSize: 13 }} onClick={() => setConfirming(true)}>
+                  Delete
+                </button>
+              ) : null}
+            </span>
           )
         ) : null}
       </div>
@@ -169,7 +228,7 @@ function WorkItemDrawer({ item, me, onClose, onChanged }) {
 // Centered modal wrapping the new step-by-step wizard (see
 // NewWorkWizard.jsx) — replaces the old always-visible, all-fields-at-once
 // form per direct feedback that it was too much at a glance.
-function NewWorkModal({ me, defaultVertical, projects, onAdd, onAddNote, onClose }) {
+function NewWorkModal({ me, projects, onAdd, onAddNote, onClose }) {
   return (
     <>
       <div className="profile-backdrop" onClick={onClose} />
@@ -182,7 +241,6 @@ function NewWorkModal({ me, defaultVertical, projects, onAdd, onAddNote, onClose
         </div>
         <NewWorkWizard
           me={me}
-          defaultVerticalId={defaultVertical.id}
           projects={projects}
           onAdd={onAdd}
           onAddNote={onAddNote}
@@ -283,7 +341,10 @@ function VerticalDashboard({ vertical, allVerticals = [vertical], me, onAddItem,
     (c) => !c.work_item_id && (() => { const a = getUser(c.author_id); return a && allTeamsOf(a.id).some((v) => v.id === vertical.id); })()
   );
 
-  const myProjects = workItems.filter((w) => w.type === 'project' && verticalsOf(w.id).some((v) => v.id === vertical.id));
+  // Org-wide, not scoped to the currently open vertical tab — a blue-sky
+  // idea should be tieable to any project the viewer can see, not just
+  // ones in whichever vertical happens to be active right now.
+  const allProjects = workItems.filter((w) => w.type === 'project');
 
   // "Overview" and "Growth Notes" aren't work-item types — everything else in
   // TABS is, and shares the same archived-toggle/grid treatment below.
@@ -365,8 +426,7 @@ function VerticalDashboard({ vertical, allVerticals = [vertical], me, onAddItem,
       {creating ? (
         <NewWorkModal
           me={me}
-          defaultVertical={vertical}
-          projects={myProjects}
+          projects={allProjects}
           // Awaited, and deliberately not caught here — a real failure needs
           // to reach NewWorkWizard's own try/catch so it can show the error
           // and keep the modal open, not vanish as a silent no-op.
@@ -397,6 +457,74 @@ function VerticalDashboard({ vertical, allVerticals = [vertical], me, onAddItem,
   );
 }
 
+// For someone with no home vertical at all (2026-07-31 — explicitly
+// project-basis hires: no team of their own, on purpose, working across
+// whatever projects they're assigned to instead). The tab-strip-driven
+// VerticalDashboard below fundamentally needs a vertical to scope its
+// Projects/Proposals/Papers tabs to — there isn't one here, so this is a
+// flatter view instead: their own items (wherever they came from, any
+// vertical) plus "+ New Work", which needs no home vertical either since
+// the wizard's own Vertical(s) picker already covers every team org-wide.
+function NoVerticalWorkspace({ me, onAddItem, onAddNote, onChanged }) {
+  const [creating, setCreating] = useState(false);
+  const [openItem, setOpenItem] = useState(null);
+  const myItems = itemsForUser(me.id).map((w) => ({ ...w, _members: membersOf(w.id).map((m) => m.user) }));
+
+  return (
+    <div className="stack" style={{ gap: 16 }}>
+      <div className="between" style={{ alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
+        <p className="tiny muted">
+          You're not tied to a specific vertical — you can still create and join projects across any team.
+        </p>
+        <button className="primary" onClick={() => setCreating(true)}>
+          + New work
+        </button>
+      </div>
+
+      {myItems.length ? (
+        <div className="grid">
+          {myItems.map((item) => (
+            <WorkCard key={item.id} item={item} me={me} onOpen={setOpenItem} />
+          ))}
+        </div>
+      ) : (
+        <Empty
+          title="Nothing yet"
+          hint='Use "+ New work" above to create your first project, proposal, paper, or blue-sky idea.'
+        />
+      )}
+
+      {creating ? (
+        <NewWorkModal
+          me={me}
+          projects={workItems.filter((w) => w.type === 'project')}
+          onAdd={async (fields) => {
+            await onAddItem(fields);
+            onChanged?.();
+          }}
+          onAddNote={async (fields) => {
+            await onAddNote(fields);
+            onChanged?.();
+          }}
+          onClose={() => setCreating(false)}
+        />
+      ) : null}
+
+      {openItem ? (
+        <WorkItemDrawer
+          item={workItems.find((w) => w.id === openItem.id) ?? openItem}
+          me={me}
+          onClose={() => setOpenItem(null)}
+          onChanged={() => {
+            onChanged?.();
+            if (!workItems.some((w) => w.id === openItem.id)) setOpenItem(null);
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 // The new vertical-first Work workspace — replaces the old "Add work" form
 // entirely, and (since it's a strict superset) also replaces the separate
 // flat "Projects"/"Proposals" nav tabs section 49-51 built. `scopeVerticals`
@@ -410,7 +538,7 @@ export default function WorkWorkspace({ me, scopeVerticals, onAddItem, onAddNote
   const active = scopeVerticals.find((v) => v.id === activeId) ?? scopeVerticals[0];
 
   if (!scopeVerticals.length) {
-    return <Empty title="No vertical assigned yet" hint="Ask the Director to assign you to a team." />;
+    return <NoVerticalWorkspace me={me} onAddItem={onAddItem} onAddNote={onAddNote} onChanged={onChanged} />;
   }
 
   return (

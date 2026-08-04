@@ -18,8 +18,13 @@ import {
   assignableUsersFor,
   commentsOn,
   addItemComment,
+  updateComment,
+  deleteComment,
+  updateMemberDeadline,
   latestContributionsOn,
   addContribution,
+  updateContribution,
+  deleteContribution,
   notifyMembers,
   deleteWorkItem,
   updateWorkItem,
@@ -121,7 +126,7 @@ function EditItemForm({ item, onSave, onCancel }) {
 }
 
 function AssignPicker({ me, item, existingMemberIds, onDone }) {
-  const candidates = assignableUsersFor(me, item).filter((u) => !existingMemberIds.has(u.id));
+  const candidates = assignableUsersFor(me).filter((u) => !existingMemberIds.has(u.id));
   const [userId, setUserId] = useState(candidates[0]?.id ?? '');
   const [role, setRole] = useState('contributor');
   const [saving, setSaving] = useState(false);
@@ -182,6 +187,105 @@ function AssignPicker({ me, item, existingMemberIds, onDone }) {
 // Every entry always shows who posted it, their role on this item, and when
 // — never just bare text — per explicit direction that an update should
 // never appear without clearly indicating its author.
+// Turns a single comment/contribution's own body into something its author
+// (and, for delete, a director) can fix or remove after the fact — the
+// explicit ask was edit AND delete "for everything whenever people enter
+// the detail," and until now a typo or a wrong entry was permanent. Shared
+// by ContributionsPanel and CommentThread below since both need the exact
+// same "text, or an editable field with Save/Cancel, plus a Delete action"
+// shape; each caller still renders its own author/role/timestamp meta line.
+function EditableBody({ text, canEdit, canDelete, onSave, onDelete }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(text);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function save() {
+    if (!draft.trim()) return;
+    setBusy(true);
+    setError('');
+    try {
+      await onSave(draft.trim());
+      setEditing(false);
+    } catch (err) {
+      setError(err.message || 'Could not save — try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    setBusy(true);
+    setError('');
+    try {
+      await onDelete();
+    } catch (err) {
+      setError(err.message || 'Could not delete — try again.');
+      setBusy(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="stack" style={{ gap: 6 }}>
+        <input aria-label="Edit" value={draft} disabled={busy} onChange={(e) => setDraft(e.target.value)} />
+        {error ? <p className="tiny danger">{error}</p> : null}
+        <div className="row" style={{ gap: 10 }}>
+          <button
+            type="button"
+            className="primary"
+            style={{ fontSize: 13 }}
+            disabled={busy || !draft.trim()}
+            onClick={save}
+          >
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+          <button
+            type="button"
+            className="quiet"
+            style={{ fontSize: 13 }}
+            disabled={busy}
+            onClick={() => {
+              setEditing(false);
+              setDraft(text);
+              setError('');
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <p className="small">{text}</p>
+      {canEdit || canDelete ? (
+        <div className="row" style={{ gap: 10, marginTop: 2 }}>
+          {canEdit ? (
+            <button type="button" className="quiet" style={{ fontSize: 12, padding: 0 }} onClick={() => setEditing(true)}>
+              Edit
+            </button>
+          ) : null}
+          {canDelete ? (
+            <button
+              type="button"
+              className="quiet"
+              style={{ fontSize: 12, padding: 0, color: 'var(--red-fg)' }}
+              disabled={busy}
+              onClick={remove}
+            >
+              {busy ? 'Deleting…' : 'Delete'}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {error ? <p className="tiny danger">{error}</p> : null}
+    </div>
+  );
+}
+
 function ContributionsPanel({ me, item, onChanged }) {
   const now = new Date();
   const rows = latestContributionsOn(item.id);
@@ -215,7 +319,19 @@ function ContributionsPanel({ me, item, onChanged }) {
                 <p className="tiny muted">
                   {mine.user.full_name} · you · {roleById.get(mine.user_id)} · {formatRelativeTime(mine.created_at, now)}
                 </p>
-                <p className="small">{mine.body}</p>
+                <EditableBody
+                  text={mine.body}
+                  canEdit
+                  canDelete
+                  onSave={async (body) => {
+                    await updateContribution(mine.id, body);
+                    onChanged?.();
+                  }}
+                  onDelete={async () => {
+                    await deleteContribution(mine.id);
+                    onChanged?.();
+                  }}
+                />
               </div>
             </div>
           ) : null}
@@ -226,7 +342,14 @@ function ContributionsPanel({ me, item, onChanged }) {
                 <p className="tiny muted">
                   {c.user.full_name} · {roleById.get(c.user_id)} · {formatRelativeTime(c.created_at, now)}
                 </p>
-                <p className="small">{c.body}</p>
+                <EditableBody
+                  text={c.body}
+                  canDelete={me?.role === 'director'}
+                  onDelete={async () => {
+                    await deleteContribution(c.id);
+                    onChanged?.();
+                  }}
+                />
               </div>
             </div>
           ))}
@@ -284,6 +407,7 @@ function CommentThread({ me, item, onChanged }) {
         <div className="stack" style={{ gap: 8 }}>
           {thread.map((c) => {
             const author = getUser(c.author_id);
+            const isMine = me?.id === c.author_id;
             return (
               <div className="row" key={c.id} style={{ gap: 8, alignItems: 'flex-start' }}>
                 {author ? <Avatar user={author} size={22} /> : null}
@@ -291,7 +415,19 @@ function CommentThread({ me, item, onChanged }) {
                   <p className="tiny muted">
                     {author?.full_name ?? 'Unknown'} · {formatRelativeTime(c.created_at, now)}
                   </p>
-                  <p className="small">{c.body}</p>
+                  <EditableBody
+                    text={c.body}
+                    canEdit={isMine}
+                    canDelete={isMine || me?.role === 'director'}
+                    onSave={async (body) => {
+                      await updateComment(c.id, body);
+                      onChanged?.();
+                    }}
+                    onDelete={async () => {
+                      await deleteComment(c.id);
+                      onChanged?.();
+                    }}
+                  />
                 </div>
               </div>
             );
@@ -400,6 +536,102 @@ function TimelineList({ item }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// A member's own deadline for their piece of this item — editable only by
+// that person (members_update_own, migration 0013), read-only text for
+// anyone else viewing the Team panel. Distinct from the item's own overall
+// target_date shown in the card footer below.
+function MemberDeadlineField({ item, member, me, onChanged }) {
+  const isMine = me?.id === member.user.id;
+  const [editing, setEditing] = useState(false);
+  const [date, setDate] = useState(member.target_date ?? '');
+  const [saving, setSaving] = useState(false);
+
+  if (!isMine) {
+    return member.target_date ? <p className="tiny muted">Their deadline: {formatDate(member.target_date)}</p> : null;
+  }
+
+  async function save() {
+    setSaving(true);
+    try {
+      await updateMemberDeadline(item.id, member.user.id, date || null);
+      onChanged?.();
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="row" style={{ gap: 6, marginTop: 2 }}>
+        <input type="date" value={date ?? ''} disabled={saving} onChange={(e) => setDate(e.target.value)} />
+        <button type="button" className="quiet" style={{ fontSize: 12 }} disabled={saving} onClick={save}>
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button
+          type="button"
+          className="quiet"
+          style={{ fontSize: 12 }}
+          disabled={saving}
+          onClick={() => {
+            setEditing(false);
+            setDate(member.target_date ?? '');
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <p className="tiny muted">
+      {member.target_date ? `Your deadline: ${formatDate(member.target_date)}` : 'No deadline set for your part yet'}{' '}
+      <button type="button" className="quiet" style={{ fontSize: 11, padding: 0 }} onClick={() => setEditing(true)}>
+        {member.target_date ? 'Change' : 'Set'}
+      </button>
+    </p>
+  );
+}
+
+// Re-designates an existing member's role — "set someone else as the
+// [project/proposal/paper] lead" without needing to remove and re-add them.
+// Reuses assignWorkItem wholesale (its on-conflict upsert already handles
+// changing role_on_item for a pair that's already a member, this just
+// exposes that from the UI for the first time) — gated by canManage, same
+// as Edit/Delete/Archive, so only the current lead(s) or a director can
+// reassign leadership, not any contributor promoting themselves.
+function RoleToggle({ item, member, me, onChanged }) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const nextRole = member.role_on_item === 'lead' ? 'contributor' : 'lead';
+
+  async function toggle() {
+    setSaving(true);
+    setError('');
+    try {
+      await assignWorkItem(
+        { work_item_id: item.id, user_id: member.user.id, role_on_item: nextRole, responsibility: member.responsibility },
+        me.id
+      );
+      onChanged?.();
+    } catch (err) {
+      setError(err.message || 'Could not change role — try again.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{ textAlign: 'right' }}>
+      <button type="button" className="quiet" style={{ fontSize: 12 }} disabled={saving} onClick={toggle}>
+        {saving ? 'Saving…' : nextRole === 'lead' ? 'Make Lead' : 'Make Contributor'}
+      </button>
+      {error ? <p className="tiny danger">{error}</p> : null}
     </div>
   );
 }
@@ -658,7 +890,9 @@ export function WorkItemCard({
                   {m.user.full_name} <span className="tiny muted">· {m.role_on_item}</span>
                 </p>
                 {m.responsibility ? <p className="tiny muted">{m.responsibility}</p> : null}
+                <MemberDeadlineField item={item} member={m} me={me} onChanged={onChanged} />
               </div>
+              {canManage ? <RoleToggle item={item} member={m} me={me} onChanged={onChanged} /> : null}
             </div>
           ))}
         </div>

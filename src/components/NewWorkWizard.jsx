@@ -7,6 +7,7 @@ import {
   stageLabel,
   creatableVerticalsFor,
   assignableUsersFor,
+  verticalName,
 } from '../data.js';
 
 const STAGES = ['Upcoming', 'Ongoing', 'Delivered'];
@@ -17,11 +18,14 @@ const WORK_TYPE_OPTIONS = [
   { id: 'blue_sky_idea', label: 'Blue-sky idea' },
   { id: 'growth', label: 'Growth note' },
 ];
-const STEP_LABELS = ['Basics', 'Vertical(s)', 'Assign members', 'Status'];
+const STEP_LABELS = ['Basics', 'People', 'Status'];
 
 // Searchable multi-select — a dropdown popover (checkboxes + a search box
-// once there are enough options to be worth filtering) instead of the old
-// always-visible checkbox row, per the redesign's explicit ask.
+// once there are enough options to be worth filtering). Lives in Step 1
+// now (2026-07-31 correction — it briefly had its own step, then was
+// removed in favor of deriving ownership from assigned people, which
+// turned out not to be what was actually wanted; explicit again, just
+// folded into Basics instead of a dedicated step).
 function VerticalMultiSelect({ options, selected, onChange }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -59,12 +63,20 @@ function VerticalMultiSelect({ options, selected, onChange }) {
               />
             ) : null}
             {filtered.length ? (
-              filtered.map((v) => (
-                <label className="multiselect-option" key={v.id}>
-                  <input type="checkbox" checked={selected.includes(v.id)} onChange={() => toggle(v.id)} />
-                  {v.name}
-                </label>
-              ))
+              filtered.map((v) => {
+                const isChecked = selected.includes(v.id);
+                return (
+                  <label className={`multiselect-option${isChecked ? ' is-selected' : ''}`} key={v.id}>
+                    <input
+                      type="checkbox"
+                      className="multiselect-checkbox"
+                      checked={isChecked}
+                      onChange={() => toggle(v.id)}
+                    />
+                    <span>{v.name}</span>
+                  </label>
+                );
+              })
             ) : (
               <p className="tiny muted" style={{ padding: '6px 8px' }}>
                 No match.
@@ -77,62 +89,43 @@ function VerticalMultiSelect({ options, selected, onChange }) {
   );
 }
 
-// A clean, scannable table — replaces the old scattered checkbox row.
-// `rows[0]` is always the wizard owner's own row (checkbox locked on, role
-// fixed to whatever Step 1's "Your role" picked); every other row is a real
-// candidate from the selected vertical(s), freely toggle-able.
-function MemberAssignTable({ rows }) {
+// Already-added members, shown as a plain compact list — not the wizard
+// owner (they're not "added," they're just the creator, established by
+// Step 1's "Your role"; showing them again here as a row to tick was the
+// actual complaint: confusing to see your own name in a list you're
+// supposed to be picking *other* people from).
+function AddedMembersTable({ rows, onRemove }) {
+  if (!rows.length) {
+    return <p className="tiny muted">No one added yet — that's fine, you can assign people later too.</p>;
+  }
   return (
     <div className="table-wrap">
       <table>
         <thead>
           <tr>
-            <th />
             <th>Member</th>
+            <th>Vertical</th>
             <th>Role</th>
-            <th>Responsibility</th>
+            <th>What they're working on</th>
+            <th />
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.id}>
-              <td>
-                <input
-                  type="checkbox"
-                  checked={r.selected}
-                  disabled={r.locked}
-                  onChange={r.onToggle}
-                  aria-label={`Include ${r.user.full_name}`}
-                />
-              </td>
+          {rows.map((m) => (
+            <tr key={m.id}>
               <td>
                 <div className="row" style={{ gap: 8 }}>
-                  <Avatar user={r.user} size={22} />
-                  <span>
-                    {r.user.full_name}
-                    {r.locked ? <span className="tiny muted"> (you)</span> : null}
-                  </span>
+                  <Avatar user={m.user} size={22} />
+                  <span>{m.user.full_name}</span>
                 </div>
               </td>
+              <td className="muted">{verticalName(m.user.vertical_id)}</td>
+              <td style={{ textTransform: 'capitalize' }}>{m.role}</td>
+              <td className="wrap muted">{m.responsibility || '—'}</td>
               <td>
-                {r.locked ? (
-                  <span className="muted" style={{ textTransform: 'capitalize' }}>
-                    {r.role}
-                  </span>
-                ) : (
-                  <select aria-label={`Role for ${r.user.full_name}`} value={r.role} onChange={r.onRoleChange}>
-                    <option value="lead">Lead</option>
-                    <option value="contributor">Contributor</option>
-                  </select>
-                )}
-              </td>
-              <td className="wrap">
-                <input
-                  aria-label={`Responsibility for ${r.user.full_name}`}
-                  value={r.responsibility}
-                  onChange={r.onResponsibilityChange}
-                  placeholder="e.g. Literature review"
-                />
+                <button type="button" className="quiet" style={{ fontSize: 12 }} onClick={() => onRemove(m.id)}>
+                  Remove
+                </button>
               </td>
             </tr>
           ))}
@@ -162,13 +155,14 @@ function WizardSteps({ step }) {
   );
 }
 
-// The redesigned "New Work" flow — a 4-step wizard for Project/Proposal/
-// Paper/Blue-sky idea (Growth note stays its own single-page form below,
-// since it has no title/status/verticals/members in this schema at all).
-// Step 1 Basics -> Step 2 Vertical(s) -> Step 3 Assign members (populated
-// only once a vertical is chosen) -> Step 4 Initial status. Replaces the old
-// single always-visible form that showed every field at once.
-export default function NewWorkWizard({ me, defaultVerticalId, projects, onAdd, onAddNote, onClose }) {
+// The "New Work" flow — a 3-step wizard for Project/Proposal/Paper/Blue-sky
+// idea (Growth note stays its own single-page form below, since it has no
+// title/status/verticals/members in this schema at all). Step 1 Basics
+// (Title, Description, Your role, Vertical(s), what you're working on) ->
+// Step 2 People (pick from a dropdown, one at a time — not a table listing
+// the whole org with the creator confusingly included as a row) -> Step 3
+// Status (stage-gated: an Upcoming item has nothing "done so far" yet).
+export default function NewWorkWizard({ me, projects, onAdd, onAddNote, onClose }) {
   const [type, setType] = useState('project');
   const [step, setStep] = useState(1);
 
@@ -176,11 +170,18 @@ export default function NewWorkWizard({ me, defaultVerticalId, projects, onAdd, 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [myRole, setMyRole] = useState('lead');
-  const [targetDate, setTargetDate] = useState('');
+  const [selfResponsibility, setSelfResponsibility] = useState('');
   const [relatedId, setRelatedId] = useState('');
   const stageGrouped = type === 'project' || type === 'paper';
   const [stage, setStage] = useState('Upcoming');
   const [status, setStatus] = useState(STATUS_OPTIONS.project[0]);
+
+  const verticalOptions = creatableVerticalsFor();
+  const [selectedVerticals, setSelectedVerticals] = useState(() =>
+    me.vertical_id && verticalOptions.some((v) => v.id === me.vertical_id)
+      ? [me.vertical_id]
+      : verticalOptions.slice(0, 1).map((v) => v.id)
+  );
 
   function changeType(id) {
     setType(id);
@@ -190,57 +191,84 @@ export default function NewWorkWizard({ me, defaultVerticalId, projects, onAdd, 
     }
   }
 
-  // Step 2 — vertical(s)
-  const verticalOptions = creatableVerticalsFor(me);
-  const [selectedVerticals, setSelectedVerticals] = useState(() => {
-    if (defaultVerticalId && verticalOptions.some((v) => v.id === defaultVerticalId)) return [defaultVerticalId];
-    return me.vertical_id && verticalOptions.some((v) => v.id === me.vertical_id)
-      ? [me.vertical_id]
-      : verticalOptions.slice(0, 1).map((v) => v.id);
-  });
+  // Step 2 — people, added one at a time from a dropdown of every
+  // assignable candidate org-wide (assignableUsersFor no longer scopes by
+  // vertical — cross-vertical assignment is the whole point). The wizard
+  // owner is never a candidate here; their own involvement was already
+  // captured in Step 1.
+  const [addedMembers, setAddedMembers] = useState([]); // [{ id, user, role, responsibility }]
+  const [pickerRole, setPickerRole] = useState('contributor');
+  const [pickerResponsibility, setPickerResponsibility] = useState('');
+  const [pickerUserId, setPickerUserId] = useState('');
 
-  // Step 3 — assign members. `assignments` only ever holds *other* people;
-  // the wizard owner's own row is tracked separately (locked selected, role
-  // mirrors Step 1's "Your role").
-  const [selfResponsibility, setSelfResponsibility] = useState('');
-  const [assignments, setAssignments] = useState({});
-  const candidates = assignableUsersFor(me, selectedVerticals).filter((u) => u.id !== me.id);
+  const candidates = assignableUsersFor(me).filter(
+    (u) => u.id !== me.id && !addedMembers.some((m) => m.id === u.id)
+  );
+  // Re-derived every render rather than trusted as-is, same reasoning
+  // QuickUpdateWidget's own comment documents elsewhere in this app: once
+  // someone's added, they drop out of `candidates`, so a stale `pickerUserId`
+  // would silently point at someone no longer in the list.
+  const selectedPickerId = candidates.some((u) => u.id === pickerUserId) ? pickerUserId : candidates[0]?.id ?? '';
 
-  function toggleMember(id) {
-    setAssignments((cur) => ({
+  // A brief "✓ Added" confirmation next to the button — clicking "+ Add to
+  // project" had no feedback at all before this, so there was no way to
+  // tell it actually registered versus nothing happening. Same fade-after-
+  // a-moment pattern NotifyForm already uses elsewhere in this app for the
+  // same reason (confirming a send).
+  const [justAdded, setJustAdded] = useState('');
+
+  function addMember() {
+    const user = candidates.find((u) => u.id === selectedPickerId);
+    if (!user) return;
+    setAddedMembers((cur) => [
       ...cur,
-      [id]: { role: 'contributor', responsibility: '', ...cur[id], selected: !cur[id]?.selected },
-    }));
-  }
-  function setMemberRole(id, role) {
-    setAssignments((cur) => ({ ...cur, [id]: { selected: false, responsibility: '', ...cur[id], role } }));
-  }
-  function setMemberResponsibility(id, responsibility) {
-    setAssignments((cur) => ({ ...cur, [id]: { selected: false, role: 'contributor', ...cur[id], responsibility } }));
+      { id: user.id, user, role: pickerRole, responsibility: pickerResponsibility.trim() },
+    ]);
+    setJustAdded(user.full_name);
+    setTimeout(() => setJustAdded(''), 1600);
+    setPickerUserId('');
+    setPickerRole('contributor');
+    setPickerResponsibility('');
   }
 
-  // Step 4 — initial status
+  function removeMember(id) {
+    setAddedMembers((cur) => cur.filter((m) => m.id !== id));
+  }
+
+  // Who's actually leading this, derived from the same role picks already
+  // made (Step 1's "Your role", each added person's own Role) rather than a
+  // separate field to fill in — but made explicit and visible rather than
+  // left implicit, since setting your own role to Contributor with no one
+  // else marked Lead yet otherwise silently leaves this unanswered until
+  // someone notices "Lead: Unassigned" on the created project itself.
+  const projectLead = myRole === 'lead' ? me : addedMembers.find((m) => m.role === 'lead')?.user ?? null;
+
+  // Step 3 — status
+  const [targetDate, setTargetDate] = useState('');
   const [initialProgress, setInitialProgress] = useState('');
   const [nextMilestone, setNextMilestone] = useState('');
+  // An upcoming project/paper hasn't started — nothing to report as "done
+  // so far" yet, only what's planned. Proposal/blue_sky_idea have no stage
+  // concept at all (flat status list instead, see STATUS_OPTIONS/
+  // STAGE_FOR_STATUS in data.js), so both fields always show for those.
+  const showDoneSoFar = !stageGrouped || stage !== 'Upcoming';
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
 
   const canProceed =
-    step === 1 ? !!(title.trim() && description.trim()) : step === 2 ? selectedVerticals.length > 0 : true;
+    step === 1 ? !!(title.trim() && description.trim() && selectedVerticals.length) : true;
 
   // Awaits the real write and only closes on success — a failure (a pending
   // migration, a network blip, whatever) surfaces right here instead of the
   // modal quietly closing as if it had worked, which is what the previous
   // fire-and-forget `onAdd(fields); onClose();` shape actually did.
   async function submit() {
-    const otherMembers = candidates
-      .filter((u) => assignments[u.id]?.selected)
-      .map((u) => ({
-        user_id: u.id,
-        role_on_item: assignments[u.id].role,
-        responsibility: assignments[u.id].responsibility,
-      }));
+    const otherMembers = addedMembers.map((m) => ({
+      user_id: m.id,
+      role_on_item: m.role,
+      responsibility: m.responsibility,
+    }));
 
     setSubmitting(true);
     setSubmitError('');
@@ -254,7 +282,7 @@ export default function NewWorkWizard({ me, defaultVerticalId, projects, onAdd, 
         status: stageGrouped ? STAGE_DEFAULT_STATUS[type][stage] : status,
         role_on_item: myRole,
         responsibility: selfResponsibility.trim(),
-        progress_note: initialProgress.trim(),
+        progress_note: showDoneSoFar ? initialProgress.trim() : '',
         plan_note: nextMilestone.trim(),
         owning_verticals: selectedVerticals,
         initial_member_ids: otherMembers,
@@ -266,32 +294,6 @@ export default function NewWorkWizard({ me, defaultVerticalId, projects, onAdd, 
       setSubmitting(false);
     }
   }
-
-  const memberRows = [
-    {
-      id: me.id,
-      user: me,
-      locked: true,
-      selected: true,
-      role: myRole,
-      responsibility: selfResponsibility,
-      onResponsibilityChange: (e) => setSelfResponsibility(e.target.value),
-    },
-    ...candidates.map((u) => {
-      const a = assignments[u.id] || { selected: false, role: 'contributor', responsibility: '' };
-      return {
-        id: u.id,
-        user: u,
-        locked: false,
-        selected: !!a.selected,
-        role: a.role,
-        responsibility: a.responsibility,
-        onToggle: () => toggleMember(u.id),
-        onRoleChange: (e) => setMemberRole(u.id, e.target.value),
-        onResponsibilityChange: (e) => setMemberResponsibility(u.id, e.target.value),
-      };
-    }),
-  ];
 
   return (
     <div>
@@ -318,6 +320,23 @@ export default function NewWorkWizard({ me, defaultVerticalId, projects, onAdd, 
       ) : (
         <>
           <WizardSteps step={step} />
+
+          {step > 1 ? (
+            <div className="row" style={{ gap: 20, flexWrap: 'wrap', marginBottom: 4 }}>
+              <p className="tiny muted">
+                <strong>Vertical(s): </strong>
+                {selectedVerticals.map((id) => verticalName(id)).join(', ') || 'None selected'}
+              </p>
+              <p className="tiny muted">
+                <strong>Project lead: </strong>
+                {projectLead ? (
+                  `${projectLead.full_name}${projectLead.id === me.id ? ' (you)' : ''}`
+                ) : (
+                  <span className="danger">Not assigned yet — mark someone as Lead below</span>
+                )}
+              </p>
+            </div>
+          ) : null}
 
           {step === 1 ? (
             <div className="stack" style={{ gap: 10 }}>
@@ -346,7 +365,7 @@ export default function NewWorkWizard({ me, defaultVerticalId, projects, onAdd, 
                 />
               </div>
               <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
-                <div style={{ width: 150 }}>
+                <div style={{ width: 170 }}>
                   <label className="tiny muted" htmlFor="wiz-role">
                     Your role
                   </label>
@@ -355,12 +374,103 @@ export default function NewWorkWizard({ me, defaultVerticalId, projects, onAdd, 
                     <option value="contributor">Contributor</option>
                   </select>
                 </div>
-                <div style={{ width: 160 }}>
-                  <label className="tiny muted" htmlFor="wiz-date">
-                    Target date
-                  </label>
-                  <input id="wiz-date" type="date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} />
+                <div className="grow" style={{ minWidth: 200 }}>
+                  <label className="tiny muted">Vertical(s) *</label>
+                  <VerticalMultiSelect options={verticalOptions} selected={selectedVerticals} onChange={setSelectedVerticals} />
                 </div>
+              </div>
+              <div>
+                <label className="tiny muted" htmlFor="wiz-self-responsibility">
+                  What are you working on <span className="dim">(optional)</span>
+                </label>
+                <input
+                  id="wiz-self-responsibility"
+                  value={selfResponsibility}
+                  onChange={(e) => setSelfResponsibility(e.target.value)}
+                  placeholder="e.g. Overall coordination, stakeholder outreach"
+                />
+              </div>
+              {type === 'blue_sky_idea' ? (
+                <div>
+                  <label className="tiny muted" htmlFor="wiz-related">
+                    Related project (optional)
+                  </label>
+                  <select id="wiz-related" value={relatedId} onChange={(e) => setRelatedId(e.target.value)}>
+                    <option value="">General idea — not tied to a project</option>
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.title}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {step === 2 ? (
+            <div className="stack" style={{ gap: 12 }}>
+              <div>
+                <label className="tiny muted">Add people</label>
+                <p className="tiny muted" style={{ marginTop: 2 }}>
+                  Add as many as you need — pick someone, set their role and what they're working on, then "+ Add
+                  to project". They'll drop into the list below and you can add the next person right away.
+                </p>
+              </div>
+              {candidates.length ? (
+                <div className="card" style={{ padding: 12 }}>
+                  <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                    <div className="grow" style={{ minWidth: 180 }}>
+                      <label className="tiny muted" htmlFor="wiz-add-person">
+                        Person
+                      </label>
+                      <select id="wiz-add-person" value={selectedPickerId} onChange={(e) => setPickerUserId(e.target.value)}>
+                        {candidates.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.full_name} — {verticalName(u.vertical_id)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div style={{ width: 150 }}>
+                      <label className="tiny muted" htmlFor="wiz-add-role">
+                        Role
+                      </label>
+                      <select id="wiz-add-role" value={pickerRole} onChange={(e) => setPickerRole(e.target.value)}>
+                        <option value="contributor">Contributor</option>
+                        <option value="lead">Lead</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 8 }}>
+                    <label className="tiny muted" htmlFor="wiz-add-responsibility">
+                      What are they working on
+                    </label>
+                    <textarea
+                      id="wiz-add-responsibility"
+                      style={{ minHeight: 60 }}
+                      value={pickerResponsibility}
+                      onChange={(e) => setPickerResponsibility(e.target.value)}
+                      placeholder="e.g. Literature review, data collection…"
+                    />
+                  </div>
+                  <div className="row" style={{ marginTop: 8, gap: 10, justifyContent: 'flex-end' }}>
+                    {justAdded ? <span className="tiny ok">✓ Added {justAdded}</span> : null}
+                    <button type="button" className="primary" style={{ fontSize: 13 }} onClick={addMember}>
+                      + Add to project
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <p className="tiny muted">Everyone assignable has already been added.</p>
+              )}
+              <AddedMembersTable rows={addedMembers} onRemove={removeMember} />
+            </div>
+          ) : null}
+
+          {step === 3 ? (
+            <div className="stack" style={{ gap: 10 }}>
+              <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
                 <div style={{ width: 170 }}>
                   <label className="tiny muted" htmlFor="wiz-stage">
                     {stageGrouped ? 'Stage' : 'Status'}
@@ -383,63 +493,30 @@ export default function NewWorkWizard({ me, defaultVerticalId, projects, onAdd, 
                     </select>
                   )}
                 </div>
-              </div>
-              {type === 'blue_sky_idea' ? (
-                <div>
-                  <label className="tiny muted" htmlFor="wiz-related">
-                    Related project (optional)
+                <div style={{ width: 160 }}>
+                  <label className="tiny muted" htmlFor="wiz-date">
+                    Target date
                   </label>
-                  <select id="wiz-related" value={relatedId} onChange={(e) => setRelatedId(e.target.value)}>
-                    <option value="">General idea — not tied to a project</option>
-                    {projects.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.title}
-                      </option>
-                    ))}
-                  </select>
+                  <input id="wiz-date" type="date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} />
+                </div>
+              </div>
+              {showDoneSoFar ? (
+                <div>
+                  <label className="tiny muted" htmlFor="wiz-progress">
+                    What's been done so far
+                  </label>
+                  <textarea
+                    id="wiz-progress"
+                    style={{ minHeight: 90 }}
+                    value={initialProgress}
+                    onChange={(e) => setInitialProgress(e.target.value)}
+                    placeholder="e.g. Literature review has been completed. Initial stakeholder meetings finished."
+                  />
                 </div>
               ) : null}
-            </div>
-          ) : null}
-
-          {step === 2 ? (
-            <div className="stack" style={{ gap: 8 }}>
-              <label className="tiny muted">Vertical(s)</label>
-              <VerticalMultiSelect options={verticalOptions} selected={selectedVerticals} onChange={setSelectedVerticals} />
-              <p className="tiny muted">
-                Choose every vertical this work belongs to — a project can be jointly owned by more than one.
-              </p>
-            </div>
-          ) : null}
-
-          {step === 3 ? (
-            <div className="stack" style={{ gap: 8 }}>
-              <label className="tiny muted">Assign members</label>
-              {selectedVerticals.length ? (
-                <MemberAssignTable rows={memberRows} />
-              ) : (
-                <p className="tiny muted">Go back and select a vertical first — members load from there.</p>
-              )}
-            </div>
-          ) : null}
-
-          {step === 4 ? (
-            <div className="stack" style={{ gap: 10 }}>
-              <div>
-                <label className="tiny muted" htmlFor="wiz-progress">
-                  Initial progress
-                </label>
-                <textarea
-                  id="wiz-progress"
-                  style={{ minHeight: 90 }}
-                  value={initialProgress}
-                  onChange={(e) => setInitialProgress(e.target.value)}
-                  placeholder="e.g. Literature review has been completed. Initial stakeholder meetings finished."
-                />
-              </div>
               <div>
                 <label className="tiny muted" htmlFor="wiz-milestone">
-                  Next milestone
+                  What are the next steps
                 </label>
                 <textarea
                   id="wiz-milestone"
@@ -470,7 +547,7 @@ export default function NewWorkWizard({ me, defaultVerticalId, projects, onAdd, 
                 Cancel
               </button>
             </div>
-            {step < 4 ? (
+            {step < STEP_LABELS.length ? (
               <button type="button" className="primary" disabled={!canProceed} onClick={() => setStep((s) => s + 1)}>
                 Next →
               </button>

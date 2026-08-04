@@ -16,6 +16,7 @@ import {
   addGrowthNote,
   syncRealData,
 } from '../data.js';
+import WorkLocation from '../components/WorkLocation.jsx';
 import Overview from './Overview.jsx';
 import WorkWorkspace from './WorkWorkspace.jsx';
 
@@ -177,6 +178,7 @@ const NAV = [
   { id: 'overview', label: 'Overview' },
   { id: 'work', label: 'Work' },
   { id: 'employees', label: 'Employees' },
+  { id: 'location', label: 'Location' },
   { id: 'people', label: 'People & roles' },
 ];
 
@@ -184,6 +186,7 @@ const TAB_TITLE = {
   overview: 'Overview',
   work: 'Work',
   employees: 'Employees',
+  location: 'Location',
   people: 'People & roles',
 };
 
@@ -349,6 +352,7 @@ export default function DirectorHome({ me, onSignOut, onOrgChart }) {
         {tab === 'employees' && (
           <Employees me={me} onChanged={() => bumpItems((n) => n + 1)} />
         )}
+        {tab === 'location' && <WorkLocation me={me} />}
         {tab === 'people' && <PeopleAndRoles />}
       </main>
     </div>

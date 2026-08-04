@@ -1184,6 +1184,61 @@ td.wrap {
   background: var(--surface-sunken);
 }
 
+.multiselect-option.is-selected {
+  background: var(--surface-sunken);
+  font-weight: 600;
+}
+
+/* Custom checkbox — replaces the native browser checkbox (a plain blue
+   square that clashed with everything else in this app's own visual
+   language) with a brand-colored, rounded one matching the rest of the
+   UI's buttons/pills/accents. Still a real <input type="checkbox">
+   underneath (appearance: none just strips the native paint), so it stays
+   fully keyboard/screen-reader operable — this is a skin, not a rebuild. */
+.multiselect-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  margin: 0;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  display: grid;
+  place-content: center;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.multiselect-checkbox:hover {
+  border-color: var(--brand-green-light);
+}
+
+.multiselect-checkbox::before {
+  content: '';
+  width: 9px;
+  height: 9px;
+  background: #fff;
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+  transform: scale(0);
+  transition: transform 0.1s ease-in-out;
+}
+
+.multiselect-checkbox:checked {
+  background: var(--brand-green-light);
+  border-color: var(--brand-green-light);
+}
+
+.multiselect-checkbox:checked::before {
+  transform: scale(1);
+}
+
+.multiselect-checkbox:focus-visible {
+  outline: 2px solid var(--brand-green-light);
+  outline-offset: 2px;
+}
+
 /* Work item timeline — a plain chronological list, same visual language as
    CommentThread/ContributionsPanel (thin divider, avatar + text rows), no
    new component style invented. */
