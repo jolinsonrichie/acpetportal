@@ -1,0 +1,18 @@
+# Vite reads VITE_-prefixed env vars at *build* time and bakes them into
+# the bundle — it doesn't matter whether they're set in Netlify's own
+# dashboard or committed in .env if the CI build environment doesn't
+# actually expose them. That gap is what broke production before (see
+# context.md) and again just now: the deployed bundle had no trace of the
+# real Supabase URL and threw "supabaseUrl is required" for every visitor.
+# Declaring them here, committed, removes the guesswork — Netlify always
+# reads this file, so the build can no longer run without them regardless
+# of dashboard state. Not a secret leak: same public anon key already
+# committed in .env in this repo (Supabase's anon key is designed to be
+# exposed client-side; RLS is the real security boundary, see README.md).
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  VITE_SUPABASE_URL = "https://ljctrdkhwjepwhcmxvhd.supabase.co"
+  VITE_SUPABASE_ANON_KEY = "sb_publishable_BTGL_IV2TLkLMgBpQNYlFg_k_P_CPJU"
