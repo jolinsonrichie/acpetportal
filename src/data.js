@@ -602,7 +602,7 @@ export async function syncRealWorkItems() {
     supabase
       .from('work_items')
       .select(
-        '*, members(user_id, role_on_item, responsibility, target_date, assigned_at, assigned_by, profiles!members_user_id_fkey(email)), work_item_verticals(vertical_id, verticals(name))'
+        '*, profiles!work_items_created_by_fkey(email), members(user_id, role_on_item, responsibility, target_date, assigned_at, assigned_by, profiles!members_user_id_fkey(email)), work_item_verticals(vertical_id, verticals(name))'
       )
       .order('created_at', { ascending: false }),
     supabase.from('verticals').select('id, name'),
@@ -632,8 +632,15 @@ export async function syncRealWorkItems() {
   }
 
   for (const row of rows ?? []) {
-    const { members: realMembers, work_item_verticals: realWiv, ...item } = row;
-    workItems.push({ ...item, _real: true });
+    const { members: realMembers, work_item_verticals: realWiv, profiles: creatorProfile, ...item } = row;
+    // created_by comes back as the real auth uuid, meaningless to compare
+    // against me.id (always a mock roster id, see realAuthContext.mockUserId)
+    // unless remapped the same way author_id already is on comments/
+    // contributions below — left unmapped (null) rather than guessed if the
+    // creator isn't one of the 15 known people, same reasoning as skipping
+    // an unmapped member/comment author elsewhere in this function.
+    const mockCreator = creatorProfile?.email ? getUserByEmail(creatorProfile.email) : null;
+    workItems.push({ ...item, created_by: mockCreator?.id ?? null, _real: true });
 
     for (const m of realMembers ?? []) {
       const mockPerson = m.profiles?.email ? getUserByEmail(m.profiles.email) : null;
@@ -819,7 +826,12 @@ async function addRealWorkItem({ type, title, description, target_date, status, 
     .from('members')
     .insert({ work_item_id: item.id, user_id: authId, role_on_item, responsibility: responsibility || null });
 
-  workItems.push({ ...item, _real: true });
+  // created_by on `item` is still the real auth uuid straight off the
+  // insert response — overwritten with the mock id immediately, same
+  // remapping syncRealWorkItems does on every subsequent sync, so
+  // canManage's `item.created_by === me.id` check works right away rather
+  // than only after the next refresh.
+  workItems.push({ ...item, created_by: mockUserId, _real: true });
   members.push({ work_item_id: item.id, user_id: mockUserId, role_on_item, responsibility: responsibility || null, _real: true });
 
   // Defaults to the author's own vertical (mock id) when no explicit list

@@ -657,11 +657,14 @@ export function WorkItemCard({
   const canAssign =
     me && (isOrgWideRole(me.role) || isLeadTierRole(me.role)) && canActOnItem(me, item);
   // Mirrors the real work_items_update/_delete RLS policies (migrations
-  // 0005/0006): the item's own lead (≈ its creator, per addWorkItem's
-  // convention of adding the author as lead) can edit or delete it, plus a
-  // director override — both are genuinely new capabilities, the mock never
-  // had either before.
-  const canManage = me && (isLeadOn(me.id, item.id) || me.role === 'director');
+  // 0005/0006) exactly: `created_by = auth.uid() or director`. Checking only
+  // isLeadOn assumed lead always equals creator, true when addWorkItem
+  // always added the author as lead — no longer true since the wizard
+  // (section 59) lets the creator pick "Contributor" for themselves (e.g.
+  // logging their own contribution to someone else's real-world-led grant),
+  // which left them unable to manage something the database already lets
+  // them manage.
+  const canManage = me && (isLeadOn(me.id, item.id) || item.created_by === me.id || me.role === 'director');
   const archived = isArchived(item);
   const [assigning, setAssigning] = useState(false);
   const [showTeam, setShowTeam] = useState(false);

@@ -5661,3 +5661,111 @@ turns out *not* to persist, the first thing to check is
 `realAuthContext` actually being set at that point in the real session
 (see `setRealAuthContext` in `App.jsx`/`data.js`), not this section's
 logic, which is what was actually exercised and confirmed correct here.
+
+## 79. Production down again with the exact section-64 bug — root-caused
+for real this time (`netlify.toml`), site itself needed a manual
+redeploy on top (2026-08-04, same day)
+
+User hit a console error screenshot: `Uncaught Error: supabaseUrl is
+required`, same crash class as section 64's one-off "went blank-white
+once." Confirmed it wasn't a one-off and was live *right now*: fetched
+the real deployed bundle (`index-q5HHbliB.js`) directly and found zero
+trace of the real Supabase URL string anywhere in it, plus the literal
+error text — the deployed build genuinely had no env vars at build time,
+for every visitor.
+
+Root cause, established this time instead of just patched around:
+Vite bakes `VITE_`-prefixed env vars in at *build* time. Nothing in this
+repo (no `netlify.toml`) told Netlify's build what to use, and — this is
+the actual finding — **there is no `.netlify` linkage anywhere in this
+repo at all**. Pushed `netlify.toml` (explicit `command`/`publish` plus
+`[build.environment]` with the same public anon key/URL already committed
+in `.env`, not a new secret) and waited 4+ minutes polling the live bundle
+hash for a rebuild that never came. That absence of any git-triggered
+rebuild is itself the proof: **this Netlify site isn't connected to
+auto-deploy from this GitHub repo at all** — matches section 64's own fix
+having been a manual dist re-upload rather than a pipeline recovering
+itself, now explained rather than just observed.
+
+Since nothing here can trigger a real Netlify deploy without site
+credentials this session doesn't have, did the actually-useful thing
+instead: rebuilt `dist/` locally (confirmed the real URL string is present
+in the output this time) and handed it to the user to drag-and-drop onto
+Netlify's Deploys tab directly — same manual fix as section 64, but now
+`netlify.toml` is committed so *whenever* this site does get connected to
+git-based deploys (offered to walk through that), this whole bug class
+stops being possible rather than needing to be caught by a screenshot
+again.
+
+### Where things stand, honestly
+- `netlify.toml` committed and pushed — correct, permanent fix for a
+  git-connected deploy, verified the values are non-secret and already
+  public in this repo.
+- Live site itself: **not fixed by this session directly** — needed (and
+  got, handed to the user) a fresh local `dist/` build to manually
+  redeploy, since there's no way to trigger or confirm an actual Netlify
+  deploy without dashboard/CLI credentials this environment doesn't have.
+- Real, standing gap worth remembering: this repo and the live Netlify
+  site are not actually wired together. Any future code fix stays purely
+  theoretical for real users until someone manually redeploys, the same
+  way this bug reappeared in the first place.
+
+## 80. Real bug: item creators who mark themselves "Contributor" (not
+Lead) had zero ability to manage their own creation — `canManage` didn't
+actually mirror the real RLS policies its own comment claimed to
+(2026-08-04, same day)
+
+Direct, frustrated report from a screenshot: a real proposal ("Welcome
+Trust Grant...", Energy Futures Lab) had no kebab menu at all — no Edit,
+no Archive, no Delete — despite the signed-in viewer being the item's own
+creator and its only team member. Traced rather than guessed: `canManage`
+in [Team.jsx](src/components/Team.jsx) was `isLeadOn(me.id, item.id) ||
+me.role === 'director'` — and the code's own comment said this was
+supposed to mirror the real `work_items_update`/`_delete` RLS policies
+(migrations 0005/0006), which actually grant `created_by = auth.uid() or
+director` — creator, not lead-status. The comment's assumption ("lead ≈
+creator, per addWorkItem's convention of adding the author as lead") broke
+the moment the wizard (section 59) let a creator pick "Contributor" for
+themselves — true here, since the real grant's actual lead applicant is
+Prof. Vaibhav Chowdary, not the ACPET person logging their own
+contribution to it. Result: the database would have happily let this
+person edit/delete their own item; the UI simply never showed the option.
+
+**A second, deeper bug found while fixing the first, not just the
+obvious comparison fix**: `item.created_by` is a real Supabase auth uuid
+straight off Postgres — comparing it to `me.id` (always a *mock* roster
+id, see `realAuthContext.mockUserId`) would silently never match, no
+matter how the first bug was patched. Unlike `comments`/`contributions`,
+whose `author_id` already gets remapped from real uuid to mock id by
+email (`getUserByEmail`), `work_items.created_by` was never remapped
+anywhere — `syncRealWorkItems` spread the raw row straight into the mock
+array, real uuid and all. This would have made a same-line fix
+(`item.created_by === me.id`) look correct, build clean, and then do
+nothing in the real app — exactly the kind of bug that only shows up
+against real data, never in review.
+
+Fixed both, not just the visible one:
+- `syncRealWorkItems`'s select now also joins
+  `profiles!work_items_created_by_fkey(email)` (constraint name confirmed
+  against the real schema — see below); the mapping loop remaps
+  `created_by` to the matching mock person's id the same way member/
+  comment authors already are, left `null` (not guessed) if the creator
+  isn't one of the 15 known people.
+- `addRealWorkItem`'s immediate local echo (the freshly-inserted row
+  pushed into `workItems` before the next sync) now overwrites
+  `created_by` to `mockUserId` right away too, so a brand-new item's
+  creator can manage it instantly, not only after the next refresh.
+- `canManage` itself: `isLeadOn(me.id, item.id) || item.created_by ===
+  me.id || me.role === 'director'`.
+
+### Verified two different ways, given no real login this session
+Couldn't sign in for real to click through it, so verified what's
+actually checkable: confirmed the exact `work_items_created_by_fkey` join
+alias is valid against the real live schema by querying it with the
+public anon key directly (`HTTP 200`, empty array from RLS rather than a
+PostgREST relationship error — proves the constraint name is real, not
+guessed) — same trick as verifying the `work_locations` table's real data
+earlier this session. Clean `vite build`. The one thing that still needs
+a real session to confirm end-to-end: that a Contributor-only creator
+actually sees the kebab menu appear live, not just that the comparison
+would now be well-formed.
