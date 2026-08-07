@@ -5843,6 +5843,55 @@ ignored.
   same pending state as every migration before it until the user runs it
   (or, per section 76, links the Supabase CLI and `db push`s it).
 - Not verified live (no real login this session, same recurring gap).
-- The `is_lead_on_item()`-vs-0005/0006 mismatch is a real, separate,
-  pre-existing bug — noted here so it isn't lost, not yet decided whether
-  to fix.
+- The `is_lead_on_item()`-vs-0005/0006 mismatch flagged above was
+  **resolved the same session, section 82 below** — decided wider than
+  either side originally had it.
+
+## 82. Edit/Archive/Delete opened to any member of the item, not just
+Lead/creator/director — same-day follow-up, direct instruction (2026-08-07)
+
+Direct answer to section 81's own flagged question: "the delete archive
+and edit option should be for everyone man... if there is any mistake
+they have made while entering or need to rewrite something." Not "any
+Lead" (which is as far as the client's own canManage ever assumed, even
+before today) and not "creator or director" (as far as the real database
+ever actually granted, migrations 0005/0006) — **any current member,
+period**. Deliberately not scoped narrower to "Leads only" — the
+reasoning given was specifically about whoever entered the mistake, and a
+Contributor is exactly who that's most often going to be.
+
+### What changed
+- **New migration `0016_open_edit_delete_to_any_member.sql`**: widens
+  `work_items_update`/`work_items_delete` (0005/0006) and their two
+  cascade-delete policies (`wiv_delete`, `members_delete`,
+  `comments_update_for_cascade`) to also allow `is_my_item()` — the exact
+  same "I am personally a member of this item" check `work_items_select`
+  itself already uses (0002) — alongside the existing creator/director
+  checks. `drop policy` + `create policy` for each, matching this
+  project's own established convention for changing an already-applied
+  policy rather than trying to hand-edit 0005/0006 in place.
+- **Migration `0015` itself edited directly** (not yet applied anywhere,
+  so safe to touch, unlike 0005/0006) — `work_item_updates_insert`
+  swapped its own just-added `is_lead_on_item()` helper for the same
+  `is_my_item()` check, and the now-unused helper function was removed
+  entirely rather than left as dead code nobody calls.
+- **`Team.jsx`**: `canManage` now checks `isMember` (`mem.some(m =>
+  m.user.id === me.id)`, reusing the card's own already-computed member
+  list) instead of `isLeadOn` — covers Edit/Archive/Delete and the Log
+  update action from section 81 in one place, since both already read
+  from the same `canManage`. Removed the now-fully-unused `isLeadOn`
+  import (kept in `data.js`'s exports and in `Overview.jsx`, where it's
+  used for the Lead/Contributor badge display — a completely different,
+  legitimate use unrelated to permissions).
+
+### Where things stand, honestly
+- Built, clean `vite build`. **Two migrations now pending** (0015, 0016)
+  — same "written but not yet applied" state as everything else this
+  session.
+- Not verified live (no real login this session).
+- This is a genuinely significant permission widening on live, real data
+  once applied — any current member of any work item can now edit its
+  title/status/target date, archive it, or delete it outright, not just
+  its Lead or creator. Direct, explicit instruction with clear reasoning,
+  not a guess — but worth knowing exactly what changed if this surprises
+  anyone later.

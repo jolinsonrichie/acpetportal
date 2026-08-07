@@ -47,24 +47,13 @@ for select using (
   or public.is_my_item(work_item_id)
 );
 
--- "I am currently assigned Lead on this item" — mirrors src/data.js's
--- isLeadOn exactly. Needed because the client's real canManage (Team.jsx)
--- has always been isLeadOn-or-creator-or-director, including for the
--- pre-existing Edit/Archive/Delete kebab menu — a lead reassigned via
--- "Make Lead" (RoleToggle, section 72) is meant to gain real management
--- rights, not just a cosmetic label. Logging a new entry should require
--- the same authority. (Note: work_items_update/_delete themselves,
--- migrations 0005/0006, only ever checked creator-or-director, never
--- lead-tier membership — an older, pre-existing mismatch with the client
--- that this migration doesn't touch; flagged separately, not fixed here.)
-create or replace function public.is_lead_on_item(p_work_item_id uuid) returns boolean
-language sql stable security definer set search_path = public as $$
-  select exists (
-    select 1 from public.members m
-    where m.work_item_id = p_work_item_id and m.user_id = auth.uid() and m.role_on_item = 'lead'
-  );
-$$;
-
+-- Logging a new entry needs the same authority as Edit/Archive/Delete on
+-- the item itself (see canManage, src/components/Team.jsx) — creator, any
+-- current member (not just Lead — per direct instruction in migration
+-- 0016, "for everyone," since whoever entered something is who's most
+-- likely to need to correct it), or a director. is_my_item() is the same
+-- "I am personally a member of this item" check work_items_select's own
+-- third branch already uses (0002).
 create policy work_item_updates_insert on public.work_item_updates
 for insert with check (
   created_by = auth.uid()
@@ -73,7 +62,7 @@ for insert with check (
     where w.id = work_item_id
       and (
         w.created_by = auth.uid()
-        or public.is_lead_on_item(work_item_id)
+        or public.is_my_item(work_item_id)
         or public.my_role() = 'director'
       )
   )

@@ -33,7 +33,6 @@ import {
   archiveWorkItem,
   isArchived,
   timelineOf,
-  isLeadOn,
   getUser,
   TYPE_LABELS,
   STATUS_OPTIONS,
@@ -768,15 +767,14 @@ export function WorkItemCard({
   const owningVerticals = verticalsOf(item.id);
   const canAssign =
     me && (isOrgWideRole(me.role) || isLeadTierRole(me.role)) && canActOnItem(me, item);
-  // Mirrors the real work_items_update/_delete RLS policies (migrations
-  // 0005/0006) exactly: `created_by = auth.uid() or director`. Checking only
-  // isLeadOn assumed lead always equals creator, true when addWorkItem
-  // always added the author as lead — no longer true since the wizard
-  // (section 59) lets the creator pick "Contributor" for themselves (e.g.
-  // logging their own contribution to someone else's real-world-led grant),
-  // which left them unable to manage something the database already lets
-  // them manage.
-  const canManage = me && (isLeadOn(me.id, item.id) || item.created_by === me.id || me.role === 'director');
+  // Open to any current member, not just Lead/creator — direct instruction
+  // (migration 0016): whoever entered something and made a mistake, or
+  // anyone on the item who needs to correct/rewrite/remove it, should be
+  // able to, not just whoever happens to be Lead or the original creator.
+  // Mirrors the real work_items_update/_delete RLS policies exactly as of
+  // 0016 — created_by, is_my_item() (any member), or director.
+  const isMember = me && mem.some((m) => m.user.id === me.id);
+  const canManage = me && (isMember || item.created_by === me.id || me.role === 'director');
   const archived = isArchived(item);
   const [assigning, setAssigning] = useState(false);
   const [showTeam, setShowTeam] = useState(false);
