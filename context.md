@@ -5769,3 +5769,80 @@ earlier this session. Clean `vite build`. The one thing that still needs
 a real session to confirm end-to-end: that a Contributor-only creator
 actually sees the kebab menu appear live, not just that the comparison
 would now be well-formed.
+
+## 81. Progress/Planned made dynamic — real history + a real due date,
+replacing the single overwritten-in-place columns (2026-08-07, new
+session)
+
+Direct complaint from a screenshot of the Edit form's "What work has been
+going on"/"What's planned next" fields: "these both need to be dynamic...
+it should have their due dates." Genuinely ambiguous which of two designs
+"dynamic" meant — asked directly via `AskUserQuestion` rather than guess:
+(a) keep a history log (same manual text entry, but each save adds a
+dated entry instead of overwriting, so you see last time's before writing
+this time's) vs (b) auto-derive Progress/Planned from the per-person
+weekly Contributions instead of being separately, manually typed at all.
+**User picked (a), history log.**
+
+### What's built
+- **New migration `0015_work_item_progress_log.sql`**: `work_item_updates`
+  table (`work_item_id`, `progress_text`, `plan_text`, `plan_due_date`,
+  `created_by`, `created_at`) — append-only by design, no update/delete
+  policy at all (a history entry doesn't get corrected after the fact, you
+  log a new one, same reasoning as `contributions`, one level up: item-
+  wide rather than per-person). Select policy mirrors `contributions_select`
+  (0007) exactly. **Backfills one row per existing item that already had
+  real text in `progress_note`/`plan_note`**, attributed to the item's own
+  `created_by`/`created_at` — nothing written before today is lost, it
+  becomes each item's first logged entry. `work_items.progress_note`/
+  `plan_note` columns are left in place (not dropped) but retired from the
+  write path — this table is the new source of truth going forward.
+- **`data.js`**: `workItemUpdates` array + `progressLogOn`/
+  `latestProgressLogOn` (same "_real-tagged, skip-unmapped-author" sync
+  pattern as contributions/comments — new `syncWorkItemUpdates`, wired into
+  `syncRealData`) + `addProgressUpdate`. `addWorkItem` no longer writes
+  `progress_note`/`plan_note` onto `work_items` itself — it seeds the
+  item's *first* `work_item_updates` row instead, right after creation,
+  only if the wizard's Basics step actually had something to say.
+- **`Team.jsx`**: new `ProgressLogSection` replaces the static
+  Progress:/Planned: block on `WorkItemCard` — always shows the latest
+  entry (same visual spot), and for whoever can manage the item, a
+  "Log update" toggle reveals **blank** fields (Progress/Plan/Due date)
+  with the previous entry visible just above, unpre-filled on purpose —
+  logging this week means looking at last time's first, not editing it in
+  place. `EditItemForm` dropped its Progress/Planned fields entirely, back
+  to pure "fix a mistake in title/status/target date."
+- **`NewWorkWizard.jsx`**: Step 3's "What are the next steps" now has a
+  due-date field alongside it, threaded through as the new item's first
+  history entry's `plan_due_date`.
+- **`WorkWorkspace.jsx`**'s grid-preview `WorkCard` (the compact card
+  shown before opening the full detail) updated the same way — reads
+  `latestProgressLogOn` instead of the retired columns, now also shows the
+  due date next to "Next:".
+
+### A second, adjacent bug found while writing this, deliberately not
+fixed here
+Writing `work_item_updates_insert`'s policy surfaced a real, **pre-
+existing** (not caused by this change) mismatch: the client's `canManage`
+(Team.jsx) has always been isLeadOn-or-creator-or-director — including for
+the existing Edit/Archive/Delete kebab menu — but the real
+`work_items_update`/`_delete` policies (migrations 0005/0006, several
+sessions old) only ever checked creator-or-director, never lead-tier
+membership. Concretely: reassigning someone as Lead via "Make Lead"
+(RoleToggle, section 72) who *isn't* the item's creator shows them
+management buttons that would actually fail server-side. Got this right
+for the *new* table (added an `is_lead_on_item()` helper, checked it
+alongside creator/director in `work_item_updates_insert`), but deliberately
+left 0005/0006 themselves untouched — widening who can edit/delete real
+live work items is its own decision, not something to fold silently into
+an unrelated feature. Flagged to the user directly rather than fixed or
+ignored.
+
+### Where things stand, honestly
+- Built, clean `vite build`. Migration written but **not yet applied** —
+  same pending state as every migration before it until the user runs it
+  (or, per section 76, links the Supabase CLI and `db push`s it).
+- Not verified live (no real login this session, same recurring gap).
+- The `is_lead_on_item()`-vs-0005/0006 mismatch is a real, separate,
+  pre-existing bug — noted here so it isn't lost, not yet decided whether
+  to fix.

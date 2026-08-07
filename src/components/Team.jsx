@@ -25,6 +25,8 @@ import {
   addContribution,
   updateContribution,
   deleteContribution,
+  latestProgressLogOn,
+  addProgressUpdate,
   notifyMembers,
   deleteWorkItem,
   updateWorkItem,
@@ -50,8 +52,6 @@ function EditItemForm({ item, onSave, onCancel }) {
   const [title, setTitle] = useState(item.title);
   const [status, setStatus] = useState(item.status);
   const [targetDate, setTargetDate] = useState(item.target_date ?? '');
-  const [progressNote, setProgressNote] = useState(item.progress_note ?? '');
-  const [planNote, setPlanNote] = useState(item.plan_note ?? '');
   const [saving, setSaving] = useState(false);
 
   async function submit(e) {
@@ -63,8 +63,6 @@ function EditItemForm({ item, onSave, onCancel }) {
         title: title.trim(),
         status,
         target_date: targetDate || null,
-        progress_note: progressNote,
-        plan_note: planNote,
       });
     } finally {
       setSaving(false);
@@ -98,20 +96,6 @@ function EditItemForm({ item, onSave, onCancel }) {
         value={targetDate ?? ''}
         onChange={(e) => setTargetDate(e.target.value)}
       />
-
-      <label className="tiny muted" htmlFor={`edit-progress-${item.id}`}>
-        What work has been going on
-      </label>
-      <textarea
-        id={`edit-progress-${item.id}`}
-        value={progressNote}
-        onChange={(e) => setProgressNote(e.target.value)}
-      />
-
-      <label className="tiny muted" htmlFor={`edit-plan-${item.id}`}>
-        What's planned next
-      </label>
-      <textarea id={`edit-plan-${item.id}`} value={planNote} onChange={(e) => setPlanNote(e.target.value)} />
 
       <div className="row" style={{ gap: 8, marginTop: 4 }}>
         <button type="submit" className="primary" style={{ fontSize: 13 }} disabled={saving || !title.trim()}>
@@ -636,6 +620,134 @@ function RoleToggle({ item, member, me, onChanged }) {
   );
 }
 
+// The item's dynamic Progress/Planned history (migration 0015, replacing
+// the old single overwritten-in-place progress_note/plan_note columns).
+// Always shows the latest entry — same visual spot the old static text
+// occupied — plus, for whoever can manage the item, a "Log update" action
+// that surfaces above blank fields rather than pre-filling them: the point
+// is seeing last time's entry before writing a new one, not editing it.
+function ProgressLogSection({ item, me, canManage, onChanged }) {
+  const latest = latestProgressLogOn(item.id);
+  const [logging, setLogging] = useState(false);
+  const [progressText, setProgressText] = useState('');
+  const [planText, setPlanText] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!progressText.trim() && !planText.trim()) return;
+    setSaving(true);
+    setError('');
+    try {
+      await addProgressUpdate(
+        {
+          work_item_id: item.id,
+          progress_text: progressText.trim(),
+          plan_text: planText.trim(),
+          plan_due_date: dueDate || null,
+        },
+        me.id
+      );
+      setProgressText('');
+      setPlanText('');
+      setDueDate('');
+      setLogging(false);
+      onChanged?.();
+    } catch (err) {
+      setError(err.message || 'Could not save — try again.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!latest && !canManage) return null;
+
+  return (
+    <div className="stack" style={{ gap: 8, marginTop: 10 }}>
+      {latest ? (
+        <div className="stack" style={{ gap: 4 }}>
+          {latest.progress_text ? (
+            <p className="small">
+              <strong>Progress: </strong>
+              {latest.progress_text}
+            </p>
+          ) : null}
+          {latest.plan_text ? (
+            <p className="small">
+              <strong>Planned: </strong>
+              {latest.plan_text}
+              {latest.plan_due_date ? ` · Due ${formatDate(latest.plan_due_date)}` : ''}
+            </p>
+          ) : null}
+          <p className="tiny dim">
+            Logged by {getUser(latest.created_by)?.full_name ?? 'someone'} ·{' '}
+            {formatRelativeTime(latest.created_at, new Date())}
+          </p>
+        </div>
+      ) : null}
+
+      {canManage ? (
+        logging ? (
+          <form className="card-divider stack" style={{ gap: 8 }} onSubmit={submit}>
+            <label className="tiny muted" htmlFor={`log-progress-${item.id}`}>
+              What work has been going on
+            </label>
+            <textarea
+              id={`log-progress-${item.id}`}
+              value={progressText}
+              onChange={(e) => setProgressText(e.target.value)}
+              placeholder="Since the last update…"
+            />
+
+            <label className="tiny muted" htmlFor={`log-plan-${item.id}`}>
+              What's planned next
+            </label>
+            <textarea id={`log-plan-${item.id}`} value={planText} onChange={(e) => setPlanText(e.target.value)} />
+
+            <label className="tiny muted" htmlFor={`log-due-${item.id}`}>
+              Due by
+            </label>
+            <input
+              id={`log-due-${item.id}`}
+              type="date"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+            />
+
+            {error ? <p className="tiny danger">{error}</p> : null}
+
+            <div className="row" style={{ gap: 8 }}>
+              <button
+                type="submit"
+                className="primary"
+                style={{ fontSize: 13 }}
+                disabled={saving || (!progressText.trim() && !planText.trim())}
+              >
+                {saving ? 'Saving…' : 'Save update'}
+              </button>
+              <button
+                type="button"
+                className="quiet"
+                style={{ fontSize: 13 }}
+                disabled={saving}
+                onClick={() => setLogging(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : (
+          <button type="button" className="quiet" style={{ fontSize: 13 }} onClick={() => setLogging(true)}>
+            Log update
+          </button>
+        )
+      ) : null}
+    </div>
+  );
+}
+
 export function WorkItemCard({
   item,
   me,
@@ -752,22 +864,7 @@ export function WorkItemCard({
         </p>
       ) : null}
 
-      {item.progress_note || item.plan_note ? (
-        <div className="stack" style={{ gap: 4, marginTop: 10 }}>
-          {item.progress_note ? (
-            <p className="small">
-              <strong>Progress: </strong>
-              {item.progress_note}
-            </p>
-          ) : null}
-          {item.plan_note ? (
-            <p className="small">
-              <strong>Planned: </strong>
-              {item.plan_note}
-            </p>
-          ) : null}
-        </div>
-      ) : null}
+      <ProgressLogSection item={item} me={me} canManage={canManage} onChanged={onChanged} />
 
       <div className="card-divider row">
         <AvatarStack users={mem.map((m) => m.user)} size={22} />

@@ -247,6 +247,7 @@ export default function NewWorkWizard({ me, projects, onAdd, onAddNote, onClose 
   const [targetDate, setTargetDate] = useState('');
   const [initialProgress, setInitialProgress] = useState('');
   const [nextMilestone, setNextMilestone] = useState('');
+  const [planDueDate, setPlanDueDate] = useState('');
   // An upcoming project/paper hasn't started — nothing to report as "done
   // so far" yet, only what's planned. Proposal/blue_sky_idea have no stage
   // concept at all (flat status list instead, see STATUS_OPTIONS/
@@ -284,6 +285,7 @@ export default function NewWorkWizard({ me, projects, onAdd, onAddNote, onClose 
         responsibility: selfResponsibility.trim(),
         progress_note: showDoneSoFar ? initialProgress.trim() : '',
         plan_note: nextMilestone.trim(),
+        plan_due_date: planDueDate || null,
         owning_verticals: selectedVerticals,
         initial_member_ids: otherMembers,
       });
@@ -526,7 +528,18 @@ export default function NewWorkWizard({ me, projects, onAdd, onAddNote, onClose 
                   placeholder="e.g. Prepare first draft. Collect remaining datasets."
                 />
               </div>
-              <p className="tiny muted">These become the first entries in this item's activity timeline.</p>
+              <div style={{ width: 160 }}>
+                <label className="tiny muted" htmlFor="wiz-plan-due">
+                  Next steps due by <span className="dim">(optional)</span>
+                </label>
+                <input
+                  id="wiz-plan-due"
+                  type="date"
+                  value={planDueDate}
+                  onChange={(e) => setPlanDueDate(e.target.value)}
+                />
+              </div>
+              <p className="tiny muted">These become this item's first logged Progress/Planned entry.</p>
             </div>
           ) : null}
 

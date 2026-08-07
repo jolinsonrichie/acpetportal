@@ -20,6 +20,7 @@ import {
   WORK_TYPES,
   formatDate,
   statusTone,
+  latestProgressLogOn,
 } from '../data.js';
 
 const TABS = [
@@ -159,6 +160,7 @@ function GrowthNoteRow({ note, me, onChanged }) {
 function WorkCard({ item, me, onOpen }) {
   const mem = item._members ?? [];
   const youreOnThis = me && mem.some((u) => u.id === me.id);
+  const latestLog = latestProgressLogOn(item.id);
   return (
     <div className="card">
       <div className="between" style={{ alignItems: 'flex-start' }}>
@@ -169,16 +171,17 @@ function WorkCard({ item, me, onOpen }) {
           <Pill tone={statusTone(item.status)}>{item.status}</Pill>
         </div>
       </div>
-      {item.progress_note ? (
+      {latestLog?.progress_text ? (
         <p className="tiny muted" style={{ marginTop: 8 }}>
           <strong>Progress: </strong>
-          {item.progress_note}
+          {latestLog.progress_text}
         </p>
       ) : null}
-      {item.plan_note ? (
+      {latestLog?.plan_text ? (
         <p className="tiny muted" style={{ marginTop: 4 }}>
           <strong>Next: </strong>
-          {item.plan_note}
+          {latestLog.plan_text}
+          {latestLog.plan_due_date ? ` · Due ${formatDate(latestLog.plan_due_date)}` : ''}
         </p>
       ) : null}
       <div className="card-divider between">

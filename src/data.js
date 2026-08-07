@@ -736,6 +736,33 @@ export async function syncRealContributions() {
   }
 }
 
+// Same shape again, for work_item_updates (migration 0015) — the dynamic
+// Progress/Planned history that replaced the old single progress_note/
+// plan_note columns.
+export async function syncWorkItemUpdates() {
+  if (!realAuthContext) return;
+  const { data: rows, error } = await supabase
+    .from('work_item_updates')
+    .select('*, profiles!work_item_updates_created_by_fkey(email)')
+    .order('created_at', { ascending: true });
+  if (error) {
+    console.error('syncWorkItemUpdates failed:', error.message);
+    return;
+  }
+
+  for (let i = workItemUpdates.length - 1; i >= 0; i--) {
+    if (workItemUpdates[i]._real) workItemUpdates.splice(i, 1);
+  }
+  for (const row of rows ?? []) {
+    const { profiles, ...entry } = row;
+    const mockUser = profiles?.email ? getUserByEmail(profiles.email) : null;
+    // Skip rather than misattribute to the syncing viewer — same reasoning
+    // as syncRealWorkItems'/syncRealComments'/syncRealContributions' fixes.
+    if (!mockUser) continue;
+    workItemUpdates.push({ ...entry, created_by: mockUser.id, _real: true });
+  }
+}
+
 // notifications_select_own (0002) already restricts every row Supabase
 // returns here to this session's own auth.uid(), so every row belongs to
 // the signed-in viewer — no email lookup needed, just their own mock id.
@@ -768,6 +795,7 @@ export async function syncRealData() {
     syncRealWorkItems(),
     syncRealComments(),
     syncRealContributions(),
+    syncWorkItemUpdates(),
     syncRealNotifications(),
     syncWorkLocations(),
   ]);
@@ -803,7 +831,7 @@ export async function syncWorkLocations() {
   }
 }
 
-async function addRealWorkItem({ type, title, description, target_date, status, progress_note, plan_note, owning_verticals, role_on_item, responsibility }) {
+async function addRealWorkItem({ type, title, description, target_date, status, owning_verticals, role_on_item, responsibility }) {
   const { authId, mockUserId } = realAuthContext;
 
   const { data: item, error } = await supabase
@@ -814,8 +842,6 @@ async function addRealWorkItem({ type, title, description, target_date, status, 
       description: description || '',
       status,
       target_date: target_date || null,
-      progress_note: progress_note || '',
-      plan_note: plan_note || '',
       created_by: authId,
     })
     .select()
@@ -870,6 +896,7 @@ export async function addWorkItem(
     responsibility = '',
     progress_note = '',
     plan_note = '',
+    plan_due_date = null,
     owning_verticals,
     // Every other member picked in the New Work wizard's Assign step, each
     // { user_id, role_on_item, responsibility } — the author's own row above
@@ -889,8 +916,6 @@ export async function addWorkItem(
       description,
       target_date,
       status: resolvedStatus,
-      progress_note,
-      plan_note,
       owning_verticals,
       role_on_item,
       responsibility,
@@ -905,8 +930,6 @@ export async function addWorkItem(
       status: resolvedStatus,
       target_date: target_date || null,
       related_work_item_id: related_work_item_id || null,
-      progress_note: progress_note || '',
-      plan_note: plan_note || '',
       budget_total: 0,
       budget_spent: 0,
       // Anchors to CURRENT_WEEK, same as every other mock timestamp — needed
@@ -942,6 +965,18 @@ export async function addWorkItem(
     if (m.user_id === authorUserId) continue;
     await assignWorkItem(
       { work_item_id: item.id, user_id: m.user_id, role_on_item: m.role_on_item || 'contributor', responsibility: m.responsibility },
+      authorUserId
+    );
+  }
+
+  // First entry in the item's Progress/Planned history (see
+  // work_item_updates, migration 0015) — replaces writing progress_note/
+  // plan_note directly onto work_items, which this function used to do.
+  // Skipped entirely (not an empty row) if the wizard's Basics step left
+  // both blank.
+  if (progress_note.trim() || plan_note.trim() || plan_due_date) {
+    await addProgressUpdate(
+      { work_item_id: item.id, progress_text: progress_note.trim(), plan_text: plan_note.trim(), plan_due_date },
       authorUserId
     );
   }
@@ -986,10 +1021,12 @@ export async function deleteWorkItem(workItemId) {
   }
 }
 
-// Edits an existing item's own fields (title/status/target_date/progress_note/
-// plan_note) — real (Supabase, RLS-checked — see migration 0006) if it was
-// synced/created for real, mock mutate-in-place otherwise. Never touches
-// type/members/verticals — this is a correction, not a re-categorization.
+// Edits an existing item's own fields (title/status/target_date — see
+// EditItemForm; progress_note/plan_note retired as of migration 0015, use
+// addProgressUpdate instead) — real (Supabase, RLS-checked — see migration
+// 0006) if it was synced/created for real, mock mutate-in-place otherwise.
+// Never touches type/members/verticals — this is a correction, not a
+// re-categorization.
 export async function updateWorkItem(workItemId, fields) {
   const idx = workItems.findIndex((w) => w.id === workItemId);
   if (idx < 0) return;
@@ -1304,9 +1341,9 @@ export function latestUpdatesForUser(userId, verticalId, limit = 3) {
 }
 
 // A member logging their own weekly update on a shared project — distinct
-// from the item's single lead-only progress_note/plan_note (see
-// WorkItemCard/EditItemForm), so several contributors can each leave their
-// own note without overwriting each other's. For a real item, calls the
+// from the item's own Progress/Planned history (workItemUpdates below,
+// canManage-only), so several contributors can each leave their own note
+// without overwriting each other's. For a real item, calls the
 // add_contribution() RPC (0007_comments_contributions_notify.sql), same
 // insert-and-notify-atomically reasoning as addItemComment; otherwise
 // mock-only, same as this always did.
@@ -1351,6 +1388,58 @@ export async function addContribution({ work_item_id, body }, authorUserId) {
     });
   }
   return note;
+}
+
+// The item's own dynamic Progress/Planned history (migration 0015) —
+// replaces the old single progress_note/plan_note columns, which were
+// silently overwritten on every edit with no history and no due date.
+// Append-only by design (no update/delete — a history entry doesn't get
+// corrected after the fact, you log a new one), same "this is a dated log,
+// not a mutable field" reasoning as contributions above, one level up:
+// item-wide rather than per-person, and always carries a real (optional)
+// due date for the planned half instead of leaving it as prose.
+export const workItemUpdates = []; // { id, work_item_id, progress_text, plan_text, plan_due_date, created_by, created_at }
+let nextWorkItemUpdateSeq = 1;
+
+export function progressLogOn(workItemId) {
+  return workItemUpdates
+    .filter((u) => u.work_item_id === workItemId)
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1)); // newest first
+}
+
+export function latestProgressLogOn(workItemId) {
+  return progressLogOn(workItemId)[0] ?? null;
+}
+
+export async function addProgressUpdate({ work_item_id, progress_text, plan_text, plan_due_date }, authorUserId) {
+  const item = workItems.find((w) => w.id === work_item_id);
+  const payload = {
+    work_item_id,
+    progress_text: progress_text || '',
+    plan_text: plan_text || '',
+    plan_due_date: plan_due_date || null,
+  };
+
+  if (item?._real && realAuthContext && authorUserId === realAuthContext.mockUserId) {
+    const { data, error } = await supabase
+      .from('work_item_updates')
+      .insert({ ...payload, created_by: realAuthContext.authId })
+      .select()
+      .single();
+    if (error) throw error;
+    const entry = { ...data, created_by: authorUserId, _real: true };
+    workItemUpdates.push(entry);
+    return entry;
+  }
+
+  const entry = {
+    id: `piu-local-${nextWorkItemUpdateSeq++}`,
+    ...payload,
+    created_by: authorUserId,
+    created_at: CURRENT_WEEK,
+  };
+  workItemUpdates.push(entry);
+  return entry;
 }
 
 // Edits a contribution's own text in place — author only (real:
