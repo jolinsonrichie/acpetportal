@@ -5895,3 +5895,12 @@ Contributor is exactly who that's most often going to be.
   its Lead or creator. Direct, explicit instruction with clear reasoning,
   not a guess — but worth knowing exactly what changed if this surprises
   anyone later.
+
+**Handoff**: user is applying `0015`/`0016` to the live DB themselves this
+time (not pasting `DATABASE_URL`/SQL back into this session) and will
+report back what happens — so unlike most of this session's migrations,
+these two may already be confirmed live by the time anyone reads this
+next, rather than still sitting in the usual "written but pending" state.
+Worth checking `pg_policies`/actually testing Edit/Archive/Delete as a
+Contributor before assuming section 82's widening is fully live, same
+standing lesson section 60 already established.
